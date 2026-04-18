@@ -80,8 +80,15 @@ def _format_decimal4(value: Optional[Decimal | int | float | str]) -> str:
         return str(value)
 
 
-def _format_int(value: Optional[int]) -> str:
-    return str(int(value or 0))
+def _format_int(value: Optional[int | float | Decimal | str]) -> str:
+    """Format integer with thousands commas. Handles None, floats, Decimals, strings."""
+    if value is None:
+        return "0"
+    try:
+        # Convert to int to remove any decimal part, then format with commas
+        return f"{int(float(str(value))):,}"
+    except Exception:
+        return str(value)
 
 
 def _format_currency(value: Optional[Decimal | int | float | str]) -> str:
@@ -226,17 +233,17 @@ def _pieces_text_for_row(row: OrdersReportRow) -> str:
 
     if int(row.goat_pieces_required or 0) > 0:
         parts.append(
-            f"{_preferred_species_label(row.product_summary or '', 'goat')} {int(row.goat_pieces_required)} pcs"
+            f"{_preferred_species_label(row.product_summary or '', 'goat')} {_format_int(row.goat_pieces_required)} pcs"
         )
 
     if int(row.sheep_pieces_required or 0) > 0:
         parts.append(
-            f"{_preferred_species_label(row.product_summary or '', 'sheep')} {int(row.sheep_pieces_required)} pcs"
+            f"{_preferred_species_label(row.product_summary or '', 'sheep')} {_format_int(row.sheep_pieces_required)} pcs"
         )
 
     if int(row.cattle_pieces_required or 0) > 0:
         parts.append(
-            f"{_preferred_species_label(row.product_summary or '', 'cattle')} {int(row.cattle_pieces_required)} pcs"
+            f"{_preferred_species_label(row.product_summary or '', 'cattle')} {_format_int(row.cattle_pieces_required)} pcs"
         )
 
     if not parts:
@@ -318,20 +325,20 @@ def _build_csv_for_orders_monthly(report_data: OrdersMonthlyReportData) -> bytes
             writer.writerow(
                 [
                     row["label"],
-                    row["goats"],
-                    row["sheep"],
-                    row["cattle"],
-                    row["total_animals"],
+                    _format_int(row["goats"]),
+                    _format_int(row["sheep"]),
+                    _format_int(row["cattle"]),
+                    _format_int(row["total_animals"]),
                 ]
             )
 
         writer.writerow(
             [
                 "TOTAL (All Animals)",
-                total_goats,
-                total_sheep,
-                total_cattle,
-                grand_total,
+                _format_int(total_goats),
+                _format_int(total_sheep),
+                _format_int(total_cattle),
+                _format_int(grand_total),
             ]
         )
         writer.writerow([])
@@ -353,7 +360,7 @@ def _build_csv_for_orders_monthly(report_data: OrdersMonthlyReportData) -> bytes
         for row in section.rows:
             writer.writerow(
                 [
-                    f"{row.serial_no}.",
+                    f"{_format_int(row.serial_no)}.",
                     row.enterprise_name,
                     _quantity_text_for_row(row),
                     _pieces_text_for_row(row),
@@ -368,7 +375,7 @@ def _build_csv_for_orders_monthly(report_data: OrdersMonthlyReportData) -> bytes
                 "Totals",
                 "",
                 f"{_format_decimal(section.total_quantity_kg)} kg",
-                f"{section.total_pieces_required:,} pcs",
+                f"{_format_int(section.total_pieces_required)} pcs",
                 "",
                 "",
                 "",
@@ -382,7 +389,7 @@ def _build_csv_for_orders_monthly(report_data: OrdersMonthlyReportData) -> bytes
                 "OVERALL TOTALS",
                 "",
                 f"{_format_decimal(report_data.totals.total_quantity_kg)} kg",
-                f"{report_data.totals.total_pieces_required:,} pcs",
+                f"{_format_int(report_data.totals.total_pieces_required)} pcs",
                 "",
                 "",
                 "",
@@ -424,7 +431,7 @@ def _build_csv_for_frozen_containers_monthly(
     for row in report_data.rows:
         writer.writerow(
             [
-                row.serial_no,
+                _format_int(row.serial_no),
                 row.client_name,
                 row.order_ratio or "",
                 _status_text(row.status),
@@ -478,7 +485,7 @@ def _build_csv_for_breakeven_summary(report_data: BreakevenSummaryReportData) ->
     for row in _build_breakeven_rows(report_data):
         writer.writerow(
             [
-                row.index,
+                _format_int(row.index),
                 row.metric,
                 row.quantity_display or "",
                 row.usd_display or "",
@@ -723,20 +730,20 @@ def _build_pdf_projection_table(report_data, projection, Table, TableStyle, Para
         data.append(
             [
                 _pdf_p(str(row["label"]), Paragraph, styles["cell"]),
-                _pdf_p(str(row["goats"]), Paragraph, styles["summary_value"]),
-                _pdf_p(str(row["sheep"]), Paragraph, styles["summary_value"]),
-                _pdf_p(str(row["cattle"]), Paragraph, styles["summary_value"]),
-                _pdf_p(str(row["total_animals"]), Paragraph, styles["summary_value"]),
+                _pdf_p(_format_int(row["goats"]), Paragraph, styles["summary_value"]),
+                _pdf_p(_format_int(row["sheep"]), Paragraph, styles["summary_value"]),
+                _pdf_p(_format_int(row["cattle"]), Paragraph, styles["summary_value"]),
+                _pdf_p(_format_int(row["total_animals"]), Paragraph, styles["summary_value"]),
             ]
         )
 
     data.append(
         [
             _pdf_p("TOTAL (All Animals)", Paragraph, styles["cell_bold"]),
-            _pdf_p(str(total_goats), Paragraph, styles["cell_bold"]),
-            _pdf_p(str(total_sheep), Paragraph, styles["cell_bold"]),
-            _pdf_p(str(total_cattle), Paragraph, styles["cell_bold"]),
-            _pdf_p(str(grand_total), Paragraph, styles["cell_bold"]),
+            _pdf_p(_format_int(total_goats), Paragraph, styles["cell_bold"]),
+            _pdf_p(_format_int(total_sheep), Paragraph, styles["cell_bold"]),
+            _pdf_p(_format_int(total_cattle), Paragraph, styles["cell_bold"]),
+            _pdf_p(_format_int(grand_total), Paragraph, styles["cell_bold"]),
         ]
     )
 
@@ -850,7 +857,7 @@ def _build_pdf_orders_table(section, Table, TableStyle, Paragraph, colors, style
     for row in section.rows:
         data.append(
             [
-                _pdf_p(f"{row.serial_no}.", Paragraph, styles["summary_value"]),
+                _pdf_p(f"{_format_int(row.serial_no)}.", Paragraph, styles["summary_value"]),
                 _pdf_p(row.enterprise_name, Paragraph, styles["cell"]),
                 _pdf_p(_quantity_text_for_row(row), Paragraph, styles["cell"]),
                 _pdf_p(_pieces_text_for_row(row), Paragraph, styles["cell"]),
@@ -865,7 +872,7 @@ def _build_pdf_orders_table(section, Table, TableStyle, Paragraph, colors, style
             _pdf_p("Totals", Paragraph, styles["cell_bold"]),
             "",
             _pdf_p(f"{_format_decimal(section.total_quantity_kg)} kg", Paragraph, styles["cell_bold"]),
-            _pdf_p(f"{section.total_pieces_required:,} pcs", Paragraph, styles["cell_bold"]),
+            _pdf_p(f"{_format_int(section.total_pieces_required)} pcs", Paragraph, styles["cell_bold"]),
             "",
             "",
             "",
@@ -921,7 +928,7 @@ def _build_pdf_frozen_table(
     for row in rows:
         data.append(
             [
-                _pdf_p(str(row.serial_no), Paragraph, styles["summary_value"]),
+                _pdf_p(_format_int(row.serial_no), Paragraph, styles["summary_value"]),
                 _pdf_p(row.client_name, Paragraph, styles["cell"]),
                 _pdf_p(row.order_ratio or "", Paragraph, styles["cell"]),
                 _pdf_p(_status_text(row.status), Paragraph, styles["summary_value"]),
@@ -1004,7 +1011,7 @@ def _build_pdf_breakeven_table(
     for row in rows:
         data.append(
             [
-                _pdf_p(str(row.index), Paragraph, styles["summary_value"]),
+                _pdf_p(_format_int(row.index), Paragraph, styles["summary_value"]),
                 _pdf_p(row.metric, Paragraph, styles["cell"]),
                 _pdf_p(row.quantity_display or "", Paragraph, styles["summary_value"]),
                 _pdf_p(row.usd_display or "", Paragraph, styles["summary_value"]),
@@ -1089,7 +1096,7 @@ def _build_pdf_for_orders_monthly(report_data: OrdersMonthlyReportData) -> bytes
                 [[
                     "OVERALL TOTALS",
                     f"{_format_decimal(report_data.totals.total_quantity_kg)} kg",
-                    f"{report_data.totals.total_pieces_required:,} pcs",
+                    f"{_format_int(report_data.totals.total_pieces_required)} pcs",
                 ]],
                 colWidths=[130, 140, 120],
             )
@@ -1395,19 +1402,19 @@ def _add_docx_projection_table(document, report_data, projection: AnimalProjecti
     for row in normalized_rows:
         cells = table.add_row().cells
         cells[0].text = str(row["label"])
-        cells[1].text = str(row["goats"])
-        cells[2].text = str(row["sheep"])
-        cells[3].text = str(row["cattle"])
-        cells[4].text = str(row["total_animals"])
+        cells[1].text = _format_int(row["goats"])
+        cells[2].text = _format_int(row["sheep"])
+        cells[3].text = _format_int(row["cattle"])
+        cells[4].text = _format_int(row["total_animals"])
         for cell in cells:
             _left_cell_text(cell)
 
     cells = table.add_row().cells
     cells[0].text = "TOTAL (All Animals)"
-    cells[1].text = str(total_goats)
-    cells[2].text = str(total_sheep)
-    cells[3].text = str(total_cattle)
-    cells[4].text = str(grand_total)
+    cells[1].text = _format_int(total_goats)
+    cells[2].text = _format_int(total_sheep)
+    cells[3].text = _format_int(total_cattle)
+    cells[4].text = _format_int(grand_total)
     for cell in cells:
         _left_cell_text(cell)
         _set_cell_text_color(cell, RGBColor, "B22222")
@@ -1434,7 +1441,7 @@ def _add_docx_orders_section_table(document, section: OrdersReportSection, WD_AL
 
     for row in section.rows:
         cells = table.add_row().cells
-        cells[0].text = f"{row.serial_no}."
+        cells[0].text = f"{_format_int(row.serial_no)}."
         cells[1].text = row.enterprise_name
         cells[2].text = _quantity_text_for_row(row)
         cells[3].text = _pieces_text_for_row(row)
@@ -1449,7 +1456,7 @@ def _add_docx_orders_section_table(document, section: OrdersReportSection, WD_AL
     cells[0].text = "Totals"
     cells[1].text = ""
     cells[2].text = f"{_format_decimal(section.total_quantity_kg)} kg"
-    cells[3].text = f"{section.total_pieces_required:,} pcs"
+    cells[3].text = f"{_format_int(section.total_pieces_required)} pcs"
     cells[4].text = ""
     cells[5].text = ""
     cells[6].text = ""
@@ -1481,7 +1488,7 @@ def _add_docx_frozen_table(document, rows: List[FrozenContainersReportRow], tota
 
     for row in rows:
         cells = table.add_row().cells
-        cells[0].text = str(row.serial_no)
+        cells[0].text = _format_int(row.serial_no)
         cells[1].text = row.client_name
         cells[2].text = row.order_ratio or ""
         cells[3].text = _status_text(row.status)
@@ -1531,7 +1538,7 @@ def _add_docx_breakeven_table(document, report_data: BreakevenSummaryReportData)
 
     for row in _build_breakeven_rows(report_data):
         cells = table.add_row().cells
-        cells[0].text = str(row.index)
+        cells[0].text = _format_int(row.index)
         cells[1].text = row.metric
         cells[2].text = row.quantity_display or ""
         cells[3].text = row.usd_display or ""
@@ -1583,7 +1590,7 @@ def _build_docx_for_orders_monthly(report_data: OrdersMonthlyReportData) -> byte
             p = document.add_paragraph()
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
             r = p.add_run(
-                f"OVERALL TOTALS: {_format_decimal(report_data.totals.total_quantity_kg)} kg    {report_data.totals.total_pieces_required:,} pcs"
+                f"OVERALL TOTALS: {_format_decimal(report_data.totals.total_quantity_kg)} kg    {_format_int(report_data.totals.total_pieces_required)} pcs"
             )
             _set_run_font(r, bold=True)
 
