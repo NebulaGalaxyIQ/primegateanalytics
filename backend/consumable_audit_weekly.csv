@@ -1,0 +1,11 @@
+CONSUMABLE INVENTORY AUDIT REPORT
+Prepared By,Solomon
+Audit Period Type,Weekly
+Period,13-Apr-2026 to 19-Apr-2026
+Generated At,2026-04-17T17:24:01.832460
+
+Week Ending: 19-Apr-2026
+Index,Week Ending (Date),Store,Item,Unit,Opening Ledger,Issues (Total),Expected Closing,Physical Count,Variance,Variance (%),Remarks
+1,19-Apr-2026,Store 1,Carton Box,pcs,500.00,120.00,380.00,380.00,0.00,0.00,
+,,,Grand Total,,500.00,120.00,380.00,380.00,0.00,,
+

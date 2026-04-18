@@ -1,0 +1,12 @@
+PRODUCT STORE INVENTORY REPORT
+Report Type,daily
+Period,17-Apr-2026 to 17-Apr-2026
+Generated At,2026-04-17T07:44:59.223171
+
+Date: 17-Apr-2026
+S.No.,Date,Store,Product Category,Product Type,Opening Balance,Inflow - Production,Inflow - Transfers In,Outflow - Dispatch,Outflow - Transfers Out,Total Boxes,Total Pieces,Closing Balance,Remarks,Checked By
+1,17-Apr-2026,Chiller 1,Frozen Meat,Whole Goat Carcass,100.00,25.00,10.00,20.00,5.00,12,48,110.00,Initial stock entry,SM
+,,,,GROUP TOTAL,100.00,25.00,10.00,20.00,5.00,12,48,110.00,,
+
+GRAND TOTALS
+,,,,,100.00,25.00,10.00,20.00,5.00,12,48,110.00,,
