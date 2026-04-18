@@ -7,25 +7,11 @@ import { getToken } from "../../services/auth";
 /* ============================================================================
    Create Order Page
    ----------------------------------------------------------------------------
-   Modes:
-   - General Orders
-   - Frozen Containers
-
-   General Orders sub-types:
-   - Local
-   - Chilled
-   - Frozen
-
-   Logic:
-   - Frozen containers default to 20,000 kg
-   - Frozen default product mix is Goat 50%, Lamb 50%, Beef 0%
-   - Changing one ratio automatically adjusts the others to keep 100%
-   - Changing one quantity adjusts the others and recalculates ratios
-   - Price per kg updates shipment/container value
-   - Shipment/container value updates price per kg
-   - Down payment updates balance
-   - General orders also include pricing fields
-   - General order subtype controls default schedule logic from departure date
+   Fixed:
+   - Users can now choose past dates
+   - All date fields accept past, present, or future values
+   - Auto-calculated dates still work, but no forced clamping to today
+   - General and Frozen order flows preserved
 ============================================================================ */
 
 const FONT_FAMILY = "Arial, sans-serif";
@@ -83,7 +69,7 @@ const ORDER_STATUS_OPTIONS = [
 ];
 
 const GENERAL_BACK_DAYS = {
-  local: 4, // midpoint for the requested 3-5 day range
+  local: 4,
   chilled: 2,
   frozen: 11,
 };
@@ -115,19 +101,16 @@ function toDateInputValue(value) {
   return `${yyyy}-${mm}-${dd}`;
 }
 
-function todayStr() {
-  return toDateInputValue(new Date());
-}
-
-function clampDateToTodayOrFuture(dateStr) {
+function normalizeDateInput(dateStr) {
   const trimmed = String(dateStr || "").trim();
   if (!trimmed) return "";
-  const today = todayStr();
-  return trimmed < today ? today : trimmed;
+  const d = new Date(`${trimmed}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return "";
+  return toDateInputValue(d);
 }
 
 function dateStrMinusDays(dateStr, days) {
-  const safe = clampDateToTodayOrFuture(dateStr);
+  const safe = normalizeDateInput(dateStr);
   if (!safe) return "";
   const d = new Date(`${safe}T00:00:00`);
   return toDateInputValue(subtractDays(d, days));
@@ -190,19 +173,16 @@ function sumValues(obj) {
 function getDefaultGeneralSchedule(type) {
   const base = new Date();
   const departure = addDays(base, GENERAL_DEFAULT_DEPARTURE_AHEAD[type] || 5);
-  const rawSlaughter = subtractDays(departure, GENERAL_BACK_DAYS[type] || 4);
+  const slaughter = subtractDays(departure, GENERAL_BACK_DAYS[type] || 4);
 
   return {
     departure_date: toDateInputValue(departure),
-    slaughter_schedule: clampDateToTodayOrFuture(toDateInputValue(rawSlaughter)),
+    slaughter_schedule: toDateInputValue(slaughter),
     expected_delivery: toDateInputValue(departure),
   };
 }
 
-function getInitialRatiosForMode(mode) {
-  if (mode === MODE_FROZEN) {
-    return { beef: 0, goat: 50, lamb: 50 };
-  }
+function getInitialRatiosForMode() {
   return { beef: 0, goat: 50, lamb: 50 };
 }
 
@@ -223,6 +203,7 @@ function quantitiesFromRatios(totalQty, ratios) {
       out[key] = roundTo(Math.max(total - assigned, 0), 2);
       return;
     }
+
     const qty = roundTo((total * (Number(ratios[key]) || 0)) / 100, 2);
     out[key] = qty;
     assigned += qty;
@@ -243,6 +224,7 @@ function ratiosFromQuantities(totalQty, quantities) {
       out[key] = roundTo(Math.max(100 - assigned, 0), 2);
       return;
     }
+
     const ratio = roundTo(((Number(quantities[key]) || 0) / total) * 100, 2);
     out[key] = ratio;
     assigned += ratio;
@@ -290,7 +272,13 @@ function rebalanceRatios(currentRatios, changedKey, nextChangedValue) {
   return next;
 }
 
-function distributeRemainingQuantity(totalQty, changedKey, changedQty, currentQuantities, currentRatios) {
+function distributeRemainingQuantity(
+  totalQty,
+  changedKey,
+  changedQty,
+  currentQuantities,
+  currentRatios
+) {
   const total = Math.max(Number(totalQty) || 0, 0);
   const next = { ...currentQuantities };
 
@@ -330,12 +318,14 @@ function distributeRemainingQuantity(totalQty, changedKey, changedQty, currentQu
   let assigned = 0;
   others.forEach((key, index) => {
     let value = 0;
+
     if (index === others.length - 1) {
       value = roundTo(Math.max(remaining - assigned, 0), 2);
     } else {
       value = roundTo((remaining * weights[key]) / weightTotal, 2);
       assigned += value;
     }
+
     next[key] = value;
   });
 
@@ -525,7 +515,12 @@ function CreateOrderPage() {
     )}%, Lamb ${formatNumber(ratios.lamb, 2)}%`;
   }, [ratios]);
 
-  const applyProductState = (nextTotal, nextQuantities, nextRatios, extra = {}) => {
+  const applyProductState = (
+    nextTotal,
+    nextQuantities,
+    nextRatios,
+    extra = {}
+  ) => {
     setForm((prev) => {
       const price = compactText(extra.price_per_kg_usd ?? prev.price_per_kg_usd);
       const shipment = compactText(
@@ -572,9 +567,9 @@ function CreateOrderPage() {
           mode,
           status: prev.status || "confirmed",
           ...defaults,
-          frozen_departure_date: clampDateToTodayOrFuture(
-            prev.frozen_departure_date || toDateInputValue(addDays(new Date(), 3))
-          ),
+          frozen_departure_date:
+            normalizeDateInput(prev.frozen_departure_date) ||
+            toDateInputValue(addDays(new Date(), 3)),
         };
       }
 
@@ -693,11 +688,11 @@ function CreateOrderPage() {
   };
 
   const handleGeneralDepartureChange = (value) => {
-    const safeDeparture = clampDateToTodayOrFuture(value);
+    const safeDeparture = normalizeDateInput(value);
     const backDays = GENERAL_BACK_DAYS[form.general_type] || 4;
-    const calculatedSlaughter = clampDateToTodayOrFuture(
-      dateStrMinusDays(safeDeparture, backDays)
-    );
+    const calculatedSlaughter = safeDeparture
+      ? dateStrMinusDays(safeDeparture, backDays)
+      : "";
 
     setForm((prev) => ({
       ...prev,
@@ -710,21 +705,21 @@ function CreateOrderPage() {
   const handleGeneralSlaughterChange = (value) => {
     setForm((prev) => ({
       ...prev,
-      slaughter_schedule: clampDateToTodayOrFuture(value),
+      slaughter_schedule: normalizeDateInput(value),
     }));
   };
 
   const handleExpectedDeliveryChange = (value) => {
     setForm((prev) => ({
       ...prev,
-      expected_delivery: clampDateToTodayOrFuture(value),
+      expected_delivery: normalizeDateInput(value),
     }));
   };
 
   const handleFrozenDepartureChange = (value) => {
     setForm((prev) => ({
       ...prev,
-      frozen_departure_date: clampDateToTodayOrFuture(value),
+      frozen_departure_date: normalizeDateInput(value),
     }));
   };
 
@@ -936,8 +931,8 @@ function CreateOrderPage() {
                 lineHeight: 1.6,
               }}
             >
-              Choose either General Orders or Frozen Containers. Required fields
-              are marked with <span style={{ color: RED }}>*</span>.
+              Choose either General Orders or Frozen Containers. Date fields now
+              allow past, present, and future dates.
             </div>
           </div>
 
@@ -1040,7 +1035,11 @@ function CreateOrderPage() {
           >
             <div style={twoColumnGrid}>
               <Input
-                label={form.mode === MODE_GENERAL ? "Name of Enterprise" : "Client Name"}
+                label={
+                  form.mode === MODE_GENERAL
+                    ? "Name of Enterprise"
+                    : "Client Name"
+                }
                 value={form.enterprise_name}
                 onChange={(v) =>
                   setForm((prev) => ({
@@ -1140,7 +1139,7 @@ function CreateOrderPage() {
                   onChange={(v) =>
                     setForm((prev) => ({
                       ...prev,
-                      container_gate_in: clampDateToTodayOrFuture(v),
+                      container_gate_in: normalizeDateInput(v),
                     }))
                   }
                 />
@@ -1169,7 +1168,11 @@ function CreateOrderPage() {
 
             <div style={{ marginTop: 12, ...threeColumnGrid }}>
               <Input
-                label={form.mode === MODE_GENERAL ? "Shipment Value (USD)" : "Container Value (USD)"}
+                label={
+                  form.mode === MODE_GENERAL
+                    ? "Shipment Value (USD)"
+                    : "Container Value (USD)"
+                }
                 type="number"
                 step="0.01"
                 value={form.shipment_value_usd}
@@ -1187,7 +1190,11 @@ function CreateOrderPage() {
               />
 
               <Input
-                label={form.mode === MODE_GENERAL ? "Down Payment (USD)" : "Down Payment"}
+                label={
+                  form.mode === MODE_GENERAL
+                    ? "Down Payment (USD)"
+                    : "Down Payment"
+                }
                 type="number"
                 step="0.01"
                 value={form.amount_paid_usd}
@@ -1237,7 +1244,9 @@ function CreateOrderPage() {
                           step="0.01"
                           min="0"
                           value={form[`${key}_quantity_kg`]}
-                          onChange={(e) => handleQuantityChange(key, e.target.value)}
+                          onChange={(e) =>
+                            handleQuantityChange(key, e.target.value)
+                          }
                           style={tableInputStyle}
                         />
                       </TableCell>

@@ -13,6 +13,7 @@ import { getToken } from "../../services/auth";
    - Beef / Goat / Lamb product mix editor
    - Auto-balancing ratios and quantities
    - Price / shipment / paid / balance auto logic
+   - **Allows past dates for slaughter, departure, and gate-in**
 ============================================================================ */
 
 const FONT_FAMILY = "Arial, sans-serif";
@@ -218,17 +219,12 @@ function todayStr() {
   return toInputDate(new Date());
 }
 
-function clampDateToTodayOrFuture(dateStr) {
-  const trimmed = String(dateStr || "").trim();
-  if (!trimmed) return "";
-  const today = todayStr();
-  return trimmed < today ? today : trimmed;
-}
+// Removed clampDateToTodayOrFuture – now we allow any valid date (past, present, future)
 
 function dateStrMinusDays(dateStr, days) {
-  const safe = clampDateToTodayOrFuture(dateStr);
-  if (!safe) return "";
-  const d = new Date(`${safe}T00:00:00`);
+  if (!dateStr) return "";
+  const d = new Date(`${dateStr}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return "";
   return toInputDate(subtractDays(d, days));
 }
 
@@ -754,9 +750,8 @@ function OrderDetailPage() {
       };
 
       if (compactText(prev.departure_date)) {
-        next.slaughter_schedule = clampDateToTodayOrFuture(
-          dateStrMinusDays(prev.departure_date, GENERAL_BACK_DAYS[type] || 4)
-        );
+        // No clamping – allow past dates
+        next.slaughter_schedule = dateStrMinusDays(prev.departure_date, GENERAL_BACK_DAYS[type] || 4);
       }
 
       return next;
@@ -927,18 +922,15 @@ function OrderDetailPage() {
   };
 
   const handleDepartureDateChange = (value) => {
-    const safe = clampDateToTodayOrFuture(value);
-
+    // Allow any date, no clamping
     setForm((prev) => {
       const next = {
         ...prev,
-        departure_date: safe,
+        departure_date: value,
       };
 
-      if (prev.order_profile !== "frozen_container" && safe) {
-        next.slaughter_schedule = clampDateToTodayOrFuture(
-          dateStrMinusDays(safe, GENERAL_BACK_DAYS[prev.order_type] || 4)
-        );
+      if (prev.order_profile !== "frozen_container" && value) {
+        next.slaughter_schedule = dateStrMinusDays(value, GENERAL_BACK_DAYS[prev.order_type] || 4);
       }
 
       return next;
@@ -1602,13 +1594,13 @@ function OrderDetailPage() {
                 label="Slaughter schedule"
                 type="date"
                 value={form.slaughter_schedule}
-                onChange={(v) => handleFieldChange("slaughter_schedule", clampDateToTodayOrFuture(v))}
+                onChange={(v) => handleFieldChange("slaughter_schedule", v)}
               />
               <Input
                 label="Expected delivery"
                 type="date"
                 value={form.expected_delivery}
-                onChange={(v) => handleFieldChange("expected_delivery", clampDateToTodayOrFuture(v))}
+                onChange={(v) => handleFieldChange("expected_delivery", v)}
               />
               <Input
                 label="Delivery days offset"
