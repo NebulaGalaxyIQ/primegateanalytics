@@ -1,23 +1,89 @@
 import authService from "./auth";
 
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/+$/, "") ||
-  "http://127.0.0.1:8000";
+/* ============================================================================
+   Breakeven Service
+   ----------------------------------------------------------------------------
+   Covers:
+   - breakeven summary data
+   - breakeven summary export / download / preview
+   - breakeven settings list / create / update / activate / deactivate
 
-const BREAKEVEN_BASE = `${API_BASE_URL}/breakeven`;
-const BREAKEVEN_SETTINGS_BASE = `${BREAKEVEN_BASE}/settings`;
-const BREAKEVEN_REPORT_BASE = `${API_BASE_URL}/reports/breakeven/summary`;
+   IMPORTANT:
+   - In local development, it falls back to http://127.0.0.1:8000
+   - In production, set NEXT_PUBLIC_API_URL or NEXT_PUBLIC_BREAKEVEN_API_URL
+   - If no production env is set, it falls back to the current site origin
+     instead of localhost, so it will not try to call your own device
+============================================================================ */
 
+/* ============================================================================
+   Base URL / Constants
+============================================================================ */
+
+const LOCAL_API_ROOT = "http://127.0.0.1:8000";
 const VALID_FORMATS = ["csv", "pdf", "docx"];
 const VALID_SCOPE_TYPES = ["global", "monthly"];
 
 /* ============================================================================
-   Core helpers
+   Environment / URL helpers
 ============================================================================ */
 
 function isBrowser() {
   return typeof window !== "undefined";
 }
+
+function isNonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function stripTrailingSlashes(value) {
+  return String(value || "").replace(/\/+$/, "");
+}
+
+function isLocalHostname(hostname) {
+  if (!hostname) return false;
+
+  const normalized = String(hostname).trim().toLowerCase();
+
+  return (
+    normalized === "localhost" ||
+    normalized === "127.0.0.1" ||
+    normalized === "::1" ||
+    normalized.endsWith(".localhost")
+  );
+}
+
+function resolveApiRoot() {
+  const explicitEnvRoot =
+    process.env.NEXT_PUBLIC_BREAKEVEN_API_URL ||
+    process.env.NEXT_PUBLIC_API_URL ||
+    process.env.NEXT_PUBLIC_API_BASE_URL;
+
+  if (isNonEmptyString(explicitEnvRoot)) {
+    return stripTrailingSlashes(explicitEnvRoot);
+  }
+
+  if (isBrowser()) {
+    const currentOrigin = stripTrailingSlashes(window.location.origin);
+    const currentHostname = window.location.hostname;
+
+    if (isLocalHostname(currentHostname)) {
+      return LOCAL_API_ROOT;
+    }
+
+    return currentOrigin;
+  }
+
+  return LOCAL_API_ROOT;
+}
+
+const API_BASE_URL = resolveApiRoot();
+const BREAKEVEN_BASE = `${API_BASE_URL}/breakeven`;
+const BREAKEVEN_SETTINGS_BASE = `${BREAKEVEN_BASE}/settings`;
+const BREAKEVEN_REPORT_BASE = `${API_BASE_URL}/reports/breakeven/summary`;
+
+/* ============================================================================
+   Auth helpers
+============================================================================ */
 
 function getStoredToken() {
   if (!isBrowser()) return null;
@@ -42,8 +108,13 @@ function buildAuthHeaders(token) {
 
   return {
     Authorization: `Bearer ${resolvedToken}`,
+    Accept: "application/json",
   };
 }
+
+/* ============================================================================
+   Generic value / query helpers
+============================================================================ */
 
 function normalizeValue(value) {
   if (value === undefined || value === null || value === "") return null;
@@ -78,6 +149,60 @@ function buildQueryString(params = {}) {
   return query ? `?${query}` : "";
 }
 
+function normalizeFormat(format, fallback = "pdf") {
+  const value = String(format || fallback)
+    .trim()
+    .toLowerCase();
+
+  if (!VALID_FORMATS.includes(value)) {
+    throw new Error("format must be csv, pdf, or docx");
+  }
+
+  return value;
+}
+
+function normalizeScopeType(scopeType) {
+  if (scopeType === undefined || scopeType === null || scopeType === "") {
+    return null;
+  }
+
+  const value = String(scopeType).trim().toLowerCase();
+
+  if (!VALID_SCOPE_TYPES.includes(value)) {
+    throw new Error("scope_type must be global or monthly");
+  }
+
+  return value;
+}
+
+function validateMonthYear(month, year) {
+  if (month !== undefined && month !== null && month !== "") {
+    const monthNum = Number(month);
+    if (!Number.isInteger(monthNum) || monthNum < 1 || monthNum > 12) {
+      throw new Error("month must be between 1 and 12");
+    }
+  }
+
+  if (year !== undefined && year !== null && year !== "") {
+    const yearNum = Number(year);
+    if (!Number.isInteger(yearNum) || yearNum < 2000) {
+      throw new Error("year must be 2000 or greater");
+    }
+  }
+}
+
+function getTodayDateStr() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}${month}${day}`;
+}
+
+/* ============================================================================
+   Error / request helpers
+============================================================================ */
+
 async function parseErrorResponse(response) {
   let detail = `Request failed with status ${response.status}`;
 
@@ -104,7 +229,9 @@ async function parseErrorResponse(response) {
     } catch (_) {}
   }
 
-  return new Error(detail);
+  const error = new Error(detail);
+  error.status = response.status;
+  return error;
 }
 
 async function requestJson(url, options = {}) {
@@ -123,6 +250,10 @@ async function requestBlob(url, options = {}) {
 
   return { blob, mediaType };
 }
+
+/* ============================================================================
+   Download / preview helpers
+============================================================================ */
 
 function triggerBrowserDownload(blob, filename) {
   if (!isBrowser()) return;
@@ -158,54 +289,10 @@ function createBlobPreviewUrl(blob) {
   };
 }
 
-function getTodayDateStr() {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, "0");
-  const day = String(now.getDate()).padStart(2, "0");
-  return `${year}${month}${day}`;
-}
-
-function normalizeFormat(format, fallback = "pdf") {
-  const value = String(format || fallback)
-    .trim()
-    .toLowerCase();
-
-  if (!VALID_FORMATS.includes(value)) {
-    throw new Error("format must be csv, pdf, or docx");
-  }
-
-  return value;
-}
-
-function normalizeScopeType(scopeType) {
-  if (scopeType === undefined || scopeType === null || scopeType === "") {
-    return null;
-  }
-
-  const value = String(scopeType).trim().toLowerCase();
-
-  if (!VALID_SCOPE_TYPES.includes(value)) {
-    throw new Error("scope_type must be global or monthly");
-  }
-
-  return value;
-}
-
-function validateMonthYear(month, year) {
-  if (month !== undefined && month !== null) {
-    const monthNum = Number(month);
-    if (!Number.isInteger(monthNum) || monthNum < 1 || monthNum > 12) {
-      throw new Error("month must be between 1 and 12");
-    }
-  }
-
-  if (year !== undefined && year !== null) {
-    const yearNum = Number(year);
-    if (!Number.isInteger(yearNum) || yearNum < 2000) {
-      throw new Error("year must be 2000 or greater");
-    }
-  }
+function buildBreakevenFilename(format) {
+  const safeFormat = normalizeFormat(format, "pdf");
+  const today = getTodayDateStr();
+  return `Breakeven Summary Report ${today}.${safeFormat}`;
 }
 
 /* ============================================================================
@@ -260,12 +347,6 @@ function buildSettingsListQuery(params = {}) {
     year: params.year,
     is_active: params.is_active,
   });
-}
-
-function buildBreakevenFilename(format) {
-  const safeFormat = normalizeFormat(format, "pdf");
-  const today = getTodayDateStr();
-  return `Breakeven Summary Report ${today}.${safeFormat}`;
 }
 
 function sanitizeSettingPayload(payload = {}, isUpdate = false) {
@@ -467,7 +548,10 @@ export async function deactivateBreakevenSetting(settingId, token) {
    Generic helpers
 ============================================================================ */
 
-export async function downloadBreakevenBlob(blob, filename = "breakeven-report") {
+export async function downloadBreakevenBlob(
+  blob,
+  filename = "breakeven-report"
+) {
   if (!isBrowser()) return { blob, filename };
   triggerBrowserDownload(blob, filename);
   return { filename };
@@ -477,7 +561,16 @@ export function getBreakevenAuthHeaders(token) {
   return buildAuthHeaders(token);
 }
 
+/* ============================================================================
+   Export
+============================================================================ */
+
 const breakevenService = {
+  API_BASE_URL,
+  BREAKEVEN_BASE,
+  BREAKEVEN_SETTINGS_BASE,
+  BREAKEVEN_REPORT_BASE,
+
   getBreakevenSummaryData,
   exportBreakevenSummary,
   downloadBreakevenSummary,

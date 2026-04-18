@@ -14,18 +14,76 @@ import { getToken } from "./auth";
    - report generation
    - export info
    - file downloads (pdf / csv)
+
+   IMPORTANT:
+   - In local development, it falls back to http://127.0.0.1:8000
+   - In production, set NEXT_PUBLIC_API_URL or NEXT_PUBLIC_AUDIT_API_URL
+   - If no production env is set, it falls back to the current site origin
+     instead of localhost, so it will not try to call your own device
 ============================================================================ */
 
 /* ============================================================================
    Base URL / Client
 ============================================================================ */
 
-const API_ROOT = "http://127.0.0.1:8000";
+const LOCAL_API_ROOT = "http://127.0.0.1:8000";
+
+function isNonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function stripTrailingSlashes(value) {
+  return String(value || "").replace(/\/+$/, "");
+}
+
+function isBrowser() {
+  return typeof window !== "undefined";
+}
+
+function isLocalHostname(hostname) {
+  if (!hostname) return false;
+  const normalized = String(hostname).trim().toLowerCase();
+
+  return (
+    normalized === "localhost" ||
+    normalized === "127.0.0.1" ||
+    normalized === "::1" ||
+    normalized.endsWith(".localhost")
+  );
+}
+
+function resolveApiRoot() {
+  const explicitEnvRoot =
+    process.env.NEXT_PUBLIC_AUDIT_API_URL ||
+    process.env.NEXT_PUBLIC_API_URL;
+
+  if (isNonEmptyString(explicitEnvRoot)) {
+    return stripTrailingSlashes(explicitEnvRoot);
+  }
+
+  if (isBrowser()) {
+    const currentOrigin = stripTrailingSlashes(window.location.origin);
+    const currentHostname = window.location.hostname;
+
+    if (isLocalHostname(currentHostname)) {
+      return LOCAL_API_ROOT;
+    }
+
+    return currentOrigin;
+  }
+
+  return LOCAL_API_ROOT;
+}
+
+const API_ROOT = resolveApiRoot();
 const AUDIT_BASE_URL = `${API_ROOT}/audit`;
 
 const client = axios.create({
   baseURL: AUDIT_BASE_URL,
   timeout: 60000,
+  headers: {
+    Accept: "application/json",
+  },
 });
 
 /* ============================================================================
@@ -57,9 +115,19 @@ function normalizeApiError(error, fallbackMessage) {
     fallbackMessage ||
     "Request failed.";
 
-  const wrapped = new Error(
-    typeof detail === "string" ? detail : fallbackMessage || "Request failed."
-  );
+  const message = Array.isArray(detail)
+    ? detail
+        .map((item) => {
+          if (typeof item === "string") return item;
+          if (item?.msg) return item.msg;
+          return JSON.stringify(item);
+        })
+        .join(" | ")
+    : typeof detail === "string"
+    ? detail
+    : fallbackMessage || "Request failed.";
+
+  const wrapped = new Error(message);
   wrapped.status = error?.response?.status || 500;
   wrapped.raw = error;
   wrapped.detail = detail;
@@ -117,9 +185,29 @@ function triggerBrowserDownload(blob, filename) {
   window.URL.revokeObjectURL(url);
 }
 
+async function tryReadBlobError(blob) {
+  try {
+    const text = await blob.text();
+    if (!text) return null;
+
+    try {
+      const parsed = JSON.parse(text);
+      return (
+        parsed?.detail ||
+        parsed?.message ||
+        (typeof parsed === "string" ? parsed : null)
+      );
+    } catch {
+      return text;
+    }
+  } catch {
+    return null;
+  }
+}
+
 async function downloadFromEndpoint(path, payload, fallbackFilename) {
   try {
-    const response = await client.post(path, payload, {
+    const response = await client.post(path, payload ?? {}, {
       responseType: "blob",
       headers: buildAuthHeaders({
         "Content-Type": "application/json",
@@ -127,8 +215,8 @@ async function downloadFromEndpoint(path, payload, fallbackFilename) {
     });
 
     const contentType =
-      response.headers["content-type"] || "application/octet-stream";
-    const contentDisposition = response.headers["content-disposition"];
+      response.headers?.["content-type"] || "application/octet-stream";
+    const contentDisposition = response.headers?.["content-disposition"];
     const filename =
       parseFilenameFromDisposition(contentDisposition) || fallbackFilename;
     const blob = new Blob([response.data], { type: contentType });
@@ -142,6 +230,22 @@ async function downloadFromEndpoint(path, payload, fallbackFilename) {
       size: blob.size,
     };
   } catch (error) {
+    const blob = error?.response?.data;
+
+    if (blob instanceof Blob) {
+      const extracted = await tryReadBlobError(blob);
+      if (extracted) {
+        const wrapped = new Error(
+          Array.isArray(extracted)
+            ? extracted.map((item) => item?.msg || String(item)).join(" | ")
+            : String(extracted)
+        );
+        wrapped.status = error?.response?.status || 500;
+        wrapped.raw = error;
+        throw wrapped;
+      }
+    }
+
     throw normalizeApiError(error, "Unable to download audit report.");
   }
 }

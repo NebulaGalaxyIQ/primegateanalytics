@@ -15,18 +15,77 @@ import { getToken } from "./auth";
    - opening balance autofill
    - report generation
    - file downloads (pdf / csv / docx)
+
+   IMPORTANT:
+   - In local development, it falls back to http://127.0.0.1:8000
+   - In production, set NEXT_PUBLIC_API_URL or NEXT_PUBLIC_INVENTORY_API_URL
+   - If no production env is set, it falls back to the current site origin
+     instead of localhost, so it will not try to call your own device
 ============================================================================ */
 
 /* ============================================================================
    Base URL / Client
 ============================================================================ */
 
-const API_ROOT = "http://127.0.0.1:8000";
+const LOCAL_API_ROOT = "http://127.0.0.1:8000";
+
+function isNonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function stripTrailingSlashes(value) {
+  return String(value || "").replace(/\/+$/, "");
+}
+
+function isBrowser() {
+  return typeof window !== "undefined";
+}
+
+function isLocalHostname(hostname) {
+  if (!hostname) return false;
+  const normalized = String(hostname).trim().toLowerCase();
+  return (
+    normalized === "localhost" ||
+    normalized === "127.0.0.1" ||
+    normalized === "::1" ||
+    normalized.endsWith(".localhost")
+  );
+}
+
+function resolveApiRoot() {
+  const explicitEnvRoot =
+    process.env.NEXT_PUBLIC_INVENTORY_API_URL ||
+    process.env.NEXT_PUBLIC_API_URL;
+
+  if (isNonEmptyString(explicitEnvRoot)) {
+    return stripTrailingSlashes(explicitEnvRoot);
+  }
+
+  if (isBrowser()) {
+    const currentOrigin = stripTrailingSlashes(window.location.origin);
+    const currentHostname = window.location.hostname;
+
+    if (isLocalHostname(currentHostname)) {
+      return LOCAL_API_ROOT;
+    }
+
+    // Prevent production browser from falling back to loopback / localhost.
+    // If no public API env is provided, use the current deployed origin.
+    return currentOrigin;
+  }
+
+  return LOCAL_API_ROOT;
+}
+
+const API_ROOT = resolveApiRoot();
 const INVENTORY_BASE_URL = `${API_ROOT}/inventory`;
 
 const client = axios.create({
   baseURL: INVENTORY_BASE_URL,
   timeout: 60000,
+  headers: {
+    Accept: "application/json",
+  },
 });
 
 /* ============================================================================
@@ -75,6 +134,13 @@ function toInteger(value, fallback = 0) {
   return Math.max(0, Math.trunc(numeric));
 }
 
+function pickFirstDefined(...values) {
+  for (const value of values) {
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
+
 function normalizeApiError(error, fallbackMessage) {
   const detail =
     error?.response?.data?.detail ||
@@ -83,18 +149,17 @@ function normalizeApiError(error, fallbackMessage) {
     fallbackMessage ||
     "Request failed.";
 
-  const message =
-    Array.isArray(detail)
-      ? detail
-          .map((item) => {
-            if (typeof item === "string") return item;
-            if (item?.msg) return item.msg;
-            return JSON.stringify(item);
-          })
-          .join(" | ")
-      : typeof detail === "string"
-      ? detail
-      : fallbackMessage || "Request failed.";
+  const message = Array.isArray(detail)
+    ? detail
+        .map((item) => {
+          if (typeof item === "string") return item;
+          if (item?.msg) return item.msg;
+          return JSON.stringify(item);
+        })
+        .join(" | ")
+    : typeof detail === "string"
+    ? detail
+    : fallbackMessage || "Request failed.";
 
   const wrapped = new Error(message);
   wrapped.status = error?.response?.status || 500;
@@ -176,7 +241,7 @@ async function tryReadBlobError(blob) {
 
 async function downloadFromEndpoint(path, payload, fallbackFilename) {
   try {
-    const response = await client.post(path, payload, {
+    const response = await client.post(path, payload ?? {}, {
       responseType: "blob",
       headers: buildAuthHeaders({
         "Content-Type": "application/json",
@@ -184,8 +249,8 @@ async function downloadFromEndpoint(path, payload, fallbackFilename) {
     });
 
     const contentType =
-      response.headers["content-type"] || "application/octet-stream";
-    const contentDisposition = response.headers["content-disposition"];
+      response.headers?.["content-type"] || "application/octet-stream";
+    const contentDisposition = response.headers?.["content-disposition"];
     const filename =
       parseFilenameFromDisposition(contentDisposition) || fallbackFilename;
     const blob = new Blob([response.data], { type: contentType });
@@ -200,6 +265,7 @@ async function downloadFromEndpoint(path, payload, fallbackFilename) {
     };
   } catch (error) {
     const blob = error?.response?.data;
+
     if (blob instanceof Blob) {
       const extracted = await tryReadBlobError(blob);
       if (extracted) {
@@ -244,75 +310,89 @@ function isConsumableRowEmpty(row = {}) {
 }
 
 function serializeProductBulkRow(row = {}) {
-  return {
-    serial_no:
-      row.serial_no ?? row.serialNo ?? row.serial_no === 0
-        ? row.serial_no ?? row.serialNo
-        : undefined,
-    product_category_id: row.product_category_id ?? row.productCategoryId ?? undefined,
-    product_id: row.product_id ?? row.productId,
-    balance_unit: row.balance_unit ?? row.balanceUnit ?? undefined,
+  const serialNo = pickFirstDefined(row.serial_no, row.serialNo);
+  const productCategoryId = pickFirstDefined(
+    row.product_category_id,
+    row.productCategoryId
+  );
+  const productId = pickFirstDefined(row.product_id, row.productId);
+  const balanceUnit = pickFirstDefined(row.balance_unit, row.balanceUnit);
+  const openingBalance = pickFirstDefined(
+    row.opening_balance,
+    row.openingBalance
+  );
 
-    ...(row.opening_balance !== undefined ||
-    row.openingBalance !== undefined
-      ? {
-          opening_balance:
-            row.opening_balance ?? row.openingBalance ?? undefined,
-        }
+  return {
+    ...(serialNo !== undefined ? { serial_no: serialNo } : {}),
+    ...(productCategoryId !== undefined
+      ? { product_category_id: productCategoryId }
+      : {}),
+    ...(productId !== undefined ? { product_id: productId } : {}),
+    ...(balanceUnit !== undefined ? { balance_unit: balanceUnit } : {}),
+    ...(openingBalance !== undefined
+      ? { opening_balance: openingBalance }
       : {}),
 
     inflow_production: toDecimalString(
-      row.inflow_production ?? row.inflowProduction
+      pickFirstDefined(row.inflow_production, row.inflowProduction)
     ),
     inflow_transfers_in: toDecimalString(
-      row.inflow_transfers_in ?? row.inflowTransfersIn
+      pickFirstDefined(row.inflow_transfers_in, row.inflowTransfersIn)
     ),
     outflow_dispatch: toDecimalString(
-      row.outflow_dispatch ?? row.outflowDispatch
+      pickFirstDefined(row.outflow_dispatch, row.outflowDispatch)
     ),
     outflow_transfers_out: toDecimalString(
-      row.outflow_transfers_out ?? row.outflowTransfersOut
+      pickFirstDefined(row.outflow_transfers_out, row.outflowTransfersOut)
     ),
 
-    total_boxes: toInteger(row.total_boxes ?? row.totalBoxes),
-    total_pieces: toInteger(row.total_pieces ?? row.totalPieces),
+    total_boxes: toInteger(pickFirstDefined(row.total_boxes, row.totalBoxes)),
+    total_pieces: toInteger(
+      pickFirstDefined(row.total_pieces, row.totalPieces)
+    ),
 
     remarks: normalizeText(row.remarks),
     checked_by_initials: normalizeInitials(
-      row.checked_by_initials ?? row.checkedByInitials
+      pickFirstDefined(row.checked_by_initials, row.checkedByInitials)
     ),
     overwrite_opening_balance: Boolean(
-      row.overwrite_opening_balance ?? row.overwriteOpeningBalance
+      pickFirstDefined(row.overwrite_opening_balance, row.overwriteOpeningBalance)
     ),
   };
 }
 
 function serializeConsumableBulkRow(row = {}) {
-  return {
-    serial_no:
-      row.serial_no ?? row.serialNo ?? row.serial_no === 0
-        ? row.serial_no ?? row.serialNo
-        : undefined,
-    item_category_id: row.item_category_id ?? row.itemCategoryId ?? undefined,
-    item_id: row.item_id ?? row.itemId,
-    unit: normalizeText(row.unit),
+  const serialNo = pickFirstDefined(row.serial_no, row.serialNo);
+  const itemCategoryId = pickFirstDefined(
+    row.item_category_id,
+    row.itemCategoryId
+  );
+  const itemId = pickFirstDefined(row.item_id, row.itemId);
+  const unit = normalizeText(row.unit);
+  const openingBalance = pickFirstDefined(
+    row.opening_balance,
+    row.openingBalance
+  );
 
-    ...(row.opening_balance !== undefined ||
-    row.openingBalance !== undefined
-      ? {
-          opening_balance:
-            row.opening_balance ?? row.openingBalance ?? undefined,
-        }
+  return {
+    ...(serialNo !== undefined ? { serial_no: serialNo } : {}),
+    ...(itemCategoryId !== undefined ? { item_category_id: itemCategoryId } : {}),
+    ...(itemId !== undefined ? { item_id: itemId } : {}),
+    ...(unit !== undefined ? { unit } : {}),
+    ...(openingBalance !== undefined
+      ? { opening_balance: openingBalance }
       : {}),
 
-    issued_today: toDecimalString(row.issued_today ?? row.issuedToday),
+    issued_today: toDecimalString(
+      pickFirstDefined(row.issued_today, row.issuedToday)
+    ),
 
     remarks: normalizeText(row.remarks),
     checked_by_initials: normalizeInitials(
-      row.checked_by_initials ?? row.checkedByInitials
+      pickFirstDefined(row.checked_by_initials, row.checkedByInitials)
     ),
     overwrite_opening_balance: Boolean(
-      row.overwrite_opening_balance ?? row.overwriteOpeningBalance
+      pickFirstDefined(row.overwrite_opening_balance, row.overwriteOpeningBalance)
     ),
   };
 }
@@ -613,11 +693,7 @@ async function deleteConsumableItem(itemId) {
    Product Daily Sheet / Entries
 ============================================================================ */
 
-async function getProductDailySheet({
-  entryDate,
-  store,
-  activeOnly = true,
-}) {
+async function getProductDailySheet({ entryDate, store, activeOnly = true }) {
   return request(
     {
       method: "GET",
