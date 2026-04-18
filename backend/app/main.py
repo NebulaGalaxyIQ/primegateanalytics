@@ -17,13 +17,12 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# Explicit origins are recommended for browser auth flows.
-# Your frontend is currently running on localhost:3001.
 allowed_origins = [
     "http://localhost:3000",
     "http://localhost:3001",
     "http://127.0.0.1:3000",
     "http://127.0.0.1:3001",
+    "https://primegateanalytics-1.onrender.com",
 ]
 
 app.add_middleware(
@@ -43,8 +42,6 @@ app.include_router(saas.router)
 app.include_router(breakeven_report.router)
 app.include_router(inventory.router)
 app.include_router(audit.router)
-
-# Core production modules
 
 
 @app.get("/", tags=["Health"])
