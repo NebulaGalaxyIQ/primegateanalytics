@@ -267,9 +267,11 @@ export default function ByproductsItemsPage() {
     <>
       <Head>
         <title>Byproducts Items</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
       </Head>
 
       <div
+        className="byproducts-items-page"
         style={{
           minHeight: "100vh",
           background: PAGE_BG,
@@ -288,6 +290,7 @@ export default function ByproductsItemsPage() {
             }}
           >
             <div
+              className="header-section"
               style={{
                 display: "flex",
                 justifyContent: "space-between",
@@ -337,11 +340,12 @@ export default function ByproductsItemsPage() {
               </div>
 
               <div
+                className="stats-cards"
                 style={{
                   display: "grid",
                   gridTemplateColumns: "repeat(3, minmax(120px, 1fr))",
                   gap: 12,
-                  minWidth: 320,
+                  minWidth: 280,
                   maxWidth: 440,
                   flex: 1,
                 }}
@@ -424,6 +428,7 @@ export default function ByproductsItemsPage() {
           </div>
 
           <div
+            className="two-column-layout"
             style={{
               display: "grid",
               gridTemplateColumns: "minmax(340px, 460px) minmax(0, 1fr)",
@@ -432,6 +437,7 @@ export default function ByproductsItemsPage() {
             }}
           >
             <section
+              className="form-section"
               style={{
                 background: SURFACE,
                 border: `1px solid ${BORDER}`,
@@ -518,6 +524,7 @@ export default function ByproductsItemsPage() {
                 </div>
 
                 <div
+                  className="price-fields"
                   style={{
                     display: "grid",
                     gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
@@ -701,6 +708,7 @@ export default function ByproductsItemsPage() {
             </section>
 
             <section
+              className="list-section"
               style={{
                 background: SURFACE,
                 border: `1px solid ${BORDER}`,
@@ -761,6 +769,7 @@ export default function ByproductsItemsPage() {
               </div>
 
               <div
+                className="filter-controls"
                 style={{
                   display: "grid",
                   gridTemplateColumns: "minmax(180px, 1fr) 180px 160px auto",
@@ -805,6 +814,7 @@ export default function ByproductsItemsPage() {
                 </select>
 
                 <label
+                  className="include-deleted-checkbox"
                   style={{
                     minHeight: 44,
                     display: "flex",
@@ -947,6 +957,100 @@ export default function ByproductsItemsPage() {
           </div>
         </div>
       </div>
+
+      <style>{`
+        /* Mobile responsive adjustments */
+        @media (max-width: 768px) {
+          .byproducts-items-page {
+            padding: 16px 12px 32px !important;
+          }
+          
+          /* Stack the two main columns */
+          .two-column-layout {
+            grid-template-columns: 1fr !important;
+            gap: 24px !important;
+          }
+          
+          /* Stats cards - stack or adjust */
+          .stats-cards {
+            min-width: 100% !important;
+            gap: 10px !important;
+          }
+          
+          .stats-cards > div {
+            padding: 10px !important;
+          }
+          
+          /* Filter controls stack vertically */
+          .filter-controls {
+            grid-template-columns: 1fr !important;
+            gap: 12px !important;
+          }
+          
+          /* Price fields stack on small screens */
+          .price-fields {
+            grid-template-columns: 1fr !important;
+            gap: 12px !important;
+          }
+          
+          /* Full width for include deleted checkbox */
+          .include-deleted-checkbox {
+            width: 100%;
+            box-sizing: border-box;
+          }
+          
+          /* Increase touch target size for action buttons */
+          .list-section button,
+          .form-section button {
+            min-height: 44px !important;
+            padding: 0 16px !important;
+          }
+          
+          /* Slightly reduce padding in table cells for better space */
+          table th,
+          table td {
+            padding: 10px 12px !important;
+          }
+          
+          /* Adjust heading font sizes */
+          h1 {
+            font-size: 24px !important;
+          }
+          
+          /* Make action buttons stack in table on very narrow screens */
+          td div[style*="flex"] {
+            flex-direction: column;
+            gap: 6px !important;
+          }
+          
+          td button {
+            width: 100%;
+          }
+        }
+        
+        /* Extra small devices (below 480px) */
+        @media (max-width: 480px) {
+          .stats-cards {
+            grid-template-columns: 1fr !important;
+            width: 100%;
+          }
+          
+          .stats-cards > div {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+          }
+          
+          .stats-cards > div > div:first-child {
+            margin-bottom: 0;
+          }
+          
+          .stats-cards > div > div:last-child {
+            margin-top: 0;
+            font-size: 28px;
+          }
+        }
+      `}</style>
     </>
   );
 }

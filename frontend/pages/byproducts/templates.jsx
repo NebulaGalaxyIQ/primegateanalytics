@@ -16,7 +16,8 @@ const GREEN = "#16a34a";
 const GREEN_SOFT = "rgba(22,163,74,0.10)";
 const RED = "#dc2626";
 const RED_SOFT = "rgba(220,38,38,0.10)";
-const SHADOW = "0 10px 30px rgba(15, 23, 42, 0.06)";
+const SHADOW = "0 12px 30px rgba(15, 23, 42, 0.06)";
+const RADIUS = 22;
 
 function coerceItems(response) {
   if (Array.isArray(response)) return response;
@@ -34,7 +35,6 @@ function coerceTotal(response) {
 
 function placeholderListFromPayload(payload) {
   if (Array.isArray(payload)) return payload;
-
   if (Array.isArray(payload?.placeholders)) return payload.placeholders;
   if (Array.isArray(payload?.data?.placeholders)) return payload.data.placeholders;
   if (Array.isArray(payload?.placeholders_meta?.placeholders)) {
@@ -43,7 +43,6 @@ function placeholderListFromPayload(payload) {
   if (Array.isArray(payload?.data?.placeholders_meta?.placeholders)) {
     return payload.data.placeholders_meta.placeholders;
   }
-
   return [];
 }
 
@@ -106,7 +105,8 @@ function StatusPill({ active, deleted }) {
         display: "inline-flex",
         alignItems: "center",
         justifyContent: "center",
-        padding: "6px 10px",
+        minHeight: 30,
+        padding: "0 10px",
         borderRadius: 999,
         fontSize: 12,
         fontWeight: 800,
@@ -129,7 +129,8 @@ function DefaultPill({ isDefault }) {
         display: "inline-flex",
         alignItems: "center",
         justifyContent: "center",
-        padding: "6px 10px",
+        minHeight: 30,
+        padding: "0 10px",
         borderRadius: 999,
         fontSize: 12,
         fontWeight: 800,
@@ -151,6 +152,7 @@ function MetricCard({ title, value, color = TEXT }) {
         border: `1px solid ${BORDER}`,
         borderRadius: 18,
         padding: 14,
+        minWidth: 0,
       }}
     >
       <div style={{ color: MUTED, fontSize: 12, fontWeight: 700 }}>{title}</div>
@@ -161,6 +163,7 @@ function MetricCard({ title, value, color = TEXT }) {
           fontWeight: 800,
           marginTop: 6,
           lineHeight: 1.1,
+          wordBreak: "break-word",
         }}
       >
         {value}
@@ -185,7 +188,8 @@ export default function ByproductsTemplatesPage() {
     include_deleted: false,
   });
 
-  const [screenWidth, setScreenWidth] = useState(1280);
+  const [viewportWidth, setViewportWidth] = useState(1440);
+
   const [loading, setLoading] = useState(true);
   const [tableLoading, setTableLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -203,23 +207,35 @@ export default function ByproductsTemplatesPage() {
   const [success, setSuccess] = useState("");
 
   useEffect(() => {
-    function handleResize() {
+    function updateViewport() {
       if (typeof window !== "undefined") {
-        setScreenWidth(window.innerWidth || 1280);
+        setViewportWidth(window.innerWidth || 1440);
       }
     }
 
-    handleResize();
+    updateViewport();
 
     if (typeof window !== "undefined") {
-      window.addEventListener("resize", handleResize);
-      return () => window.removeEventListener("resize", handleResize);
+      window.addEventListener("resize", updateViewport);
+      return () => window.removeEventListener("resize", updateViewport);
     }
 
     return undefined;
   }, []);
 
-  const isMobile = screenWidth < 980;
+  const isPhone = viewportWidth < 768;
+  const isTablet = viewportWidth >= 768 && viewportWidth < 1200;
+  const useCardList = viewportWidth < 1320;
+
+  const formGridColumns = isPhone
+    ? "1fr"
+    : isTablet
+    ? "repeat(2, minmax(0, 1fr))"
+    : "minmax(320px, 380px) minmax(320px, 380px) minmax(0, 1fr)";
+
+  const metricColumns = isPhone
+    ? "repeat(2, minmax(0, 1fr))"
+    : "repeat(4, minmax(0, 1fr))";
 
   const loadTemplates = useCallback(async () => {
     setTableLoading(true);
@@ -278,6 +294,12 @@ export default function ByproductsTemplatesPage() {
     };
   }, [templates]);
 
+  const selectedTemplateName = useMemo(() => {
+    if (!selectedPlaceholderTemplate) return "";
+    const match = templates.find((item) => item?.id === selectedPlaceholderTemplate);
+    return match?.name || "";
+  }, [selectedPlaceholderTemplate, templates]);
+
   function resetUploadForm() {
     setUploadForm(emptyUploadForm());
   }
@@ -302,7 +324,12 @@ export default function ByproductsTemplatesPage() {
     setError("");
 
     if (typeof window !== "undefined") {
-      window.scrollTo({ top: 0, behavior: "smooth" });
+      const section = document.getElementById("edit-template-section");
+      if (section?.scrollIntoView) {
+        section.scrollIntoView({ behavior: "smooth", block: "start" });
+      } else {
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      }
     }
   }
 
@@ -394,11 +421,8 @@ export default function ByproductsTemplatesPage() {
       const response = await ByproductsService.refreshTemplatePlaceholders(id);
       const latestList = placeholderListFromPayload(response);
 
-      if (latestList.length > 0) {
-        setSelectedPlaceholderTemplate(id);
-        setSelectedPlaceholders(latestList);
-      }
-
+      setSelectedPlaceholderTemplate(id);
+      setSelectedPlaceholders(latestList);
       setSuccess("Template placeholders refreshed successfully.");
       await loadTemplates();
     } catch (err) {
@@ -438,6 +462,7 @@ export default function ByproductsTemplatesPage() {
     const file = replaceFiles[templateId];
     if (!file) {
       setError("Choose a replacement file first.");
+      setSuccess("");
       return;
     }
 
@@ -458,7 +483,7 @@ export default function ByproductsTemplatesPage() {
   }
 
   async function handleDelete(id) {
-    const ok = window.confirm("Delete this template?");
+    const ok = typeof window !== "undefined" ? window.confirm("Delete this template?") : true;
     if (!ok) return;
 
     setDeletingId(id);
@@ -468,13 +493,16 @@ export default function ByproductsTemplatesPage() {
     try {
       await ByproductsService.deleteTemplate(id);
       setSuccess("Template deleted successfully.");
+
       if (selectedPlaceholderTemplate === id) {
         setSelectedPlaceholderTemplate(null);
         setSelectedPlaceholders([]);
       }
+
       if (editForm.id === id) {
         resetEditForm();
       }
+
       await loadTemplates();
     } catch (err) {
       setError(err?.message || "Failed to delete template.");
@@ -509,40 +537,34 @@ export default function ByproductsTemplatesPage() {
         style={{
           minHeight: "100vh",
           background: PAGE_BG,
-          padding: isMobile ? "14px 12px 28px" : "20px 16px 40px",
+          padding: isPhone ? "12px 10px 28px" : isTablet ? "16px 14px 36px" : "20px 16px 42px",
           fontFamily: "Arial, sans-serif",
         }}
       >
         <div
           style={{
-            maxWidth: 1500,
+            maxWidth: 1540,
             margin: "0 auto",
             display: "grid",
             gap: 18,
           }}
         >
-          <div
-            style={{
-              background: SURFACE,
-              border: `1px solid ${BORDER}`,
-              borderRadius: 24,
-              padding: isMobile ? 16 : 20,
-              boxShadow: SHADOW,
-            }}
-          >
+          <section style={panelStyle(isPhone ? 16 : 20)}>
             <div
               style={{
-                display: "flex",
-                justifyContent: "space-between",
+                display: "grid",
+                gridTemplateColumns: isPhone ? "1fr" : "minmax(0, 1fr) minmax(320px, 520px)",
                 gap: 16,
-                flexWrap: "wrap",
+                alignItems: "start",
               }}
             >
-              <div style={{ minWidth: 0, flex: 1 }}>
+              <div style={{ minWidth: 0 }}>
                 <div
                   style={{
                     display: "inline-flex",
-                    padding: "6px 12px",
+                    alignItems: "center",
+                    minHeight: 30,
+                    padding: "0 12px",
                     borderRadius: 999,
                     background: ORANGE_SOFT,
                     color: ORANGE_DEEP,
@@ -558,9 +580,10 @@ export default function ByproductsTemplatesPage() {
                   style={{
                     margin: 0,
                     color: TEXT,
-                    fontSize: isMobile ? 24 : 28,
+                    fontSize: isPhone ? 24 : 30,
                     fontWeight: 800,
                     lineHeight: 1.15,
+                    letterSpacing: "-0.02em",
                   }}
                 >
                   Templates
@@ -568,41 +591,31 @@ export default function ByproductsTemplatesPage() {
 
                 <p
                   style={{
-                    margin: "8px 0 0",
+                    margin: "9px 0 0",
                     color: MUTED,
-                    fontSize: 14,
+                    fontSize: isPhone ? 13 : 14,
                     lineHeight: 1.7,
-                    maxWidth: 840,
+                    maxWidth: 860,
                   }}
                 >
-                  Upload, edit, organize, replace, and preview byproducts report
-                  templates. The page switches to stacked cards on phones so it
-                  remains usable on small screens.
+                  Upload, edit, organize, replace, and preview byproducts report templates.
+                  On desktop the data stays spacious and structured, while on phone the same
+                  content switches into clean stacked cards without clipping, overlap, or hidden actions.
                 </p>
               </div>
 
               <div
                 style={{
                   display: "grid",
-                  gridTemplateColumns: isMobile
-                    ? "repeat(2, minmax(0, 1fr))"
-                    : "repeat(4, minmax(120px, 1fr))",
+                  gridTemplateColumns: metricColumns,
                   gap: 12,
-                  width: isMobile ? "100%" : "auto",
-                  minWidth: isMobile ? 0 : 480,
+                  width: "100%",
+                  minWidth: 0,
                 }}
               >
-                <MetricCard title="Total" value={loading ? "..." : total} color={TEXT} />
-                <MetricCard
-                  title="Active"
-                  value={loading ? "..." : summary.activeCount}
-                  color={GREEN}
-                />
-                <MetricCard
-                  title="Default"
-                  value={loading ? "..." : summary.defaultCount}
-                  color={BLUE}
-                />
+                <MetricCard title="Total" value={loading ? "..." : total} />
+                <MetricCard title="Active" value={loading ? "..." : summary.activeCount} color={GREEN} />
+                <MetricCard title="Default" value={loading ? "..." : summary.defaultCount} color={BLUE} />
                 <MetricCard
                   title="Placeholders"
                   value={loading ? "..." : summary.placeholderTotal}
@@ -612,67 +625,35 @@ export default function ByproductsTemplatesPage() {
             </div>
 
             {error ? (
-              <div
-                style={{
-                  marginTop: 16,
-                  padding: "12px 14px",
-                  borderRadius: 14,
-                  background: RED_SOFT,
-                  color: RED,
-                  fontSize: 13,
-                  fontWeight: 700,
-                }}
-              >
+              <div style={messageStyle("error")}>
                 {error}
               </div>
             ) : null}
 
             {success ? (
-              <div
-                style={{
-                  marginTop: 16,
-                  padding: "12px 14px",
-                  borderRadius: 14,
-                  background: GREEN_SOFT,
-                  color: GREEN,
-                  fontSize: 13,
-                  fontWeight: 700,
-                }}
-              >
+              <div style={messageStyle("success")}>
                 {success}
               </div>
             ) : null}
-          </div>
+          </section>
 
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: isMobile
-                ? "1fr"
-                : "minmax(340px, 420px) minmax(340px, 420px) minmax(0, 1fr)",
+              gridTemplateColumns: formGridColumns,
               gap: 18,
               alignItems: "start",
             }}
           >
-            <section
-              style={{
-                background: SURFACE,
-                border: `1px solid ${BORDER}`,
-                borderRadius: 22,
-                padding: isMobile ? 16 : 18,
-                boxShadow: SHADOW,
-              }}
-            >
-              <h2
-                style={{
-                  margin: "0 0 14px",
-                  color: TEXT,
-                  fontSize: 18,
-                  fontWeight: 800,
-                }}
-              >
-                Upload Template
-              </h2>
+            <section style={panelStyle(isPhone ? 16 : 18)}>
+              <div style={sectionHeaderStyle}>
+                <div>
+                  <h2 style={sectionTitleStyle}>Upload Template</h2>
+                  <p style={sectionTextStyle}>
+                    Add a new byproducts template file and configure its details.
+                  </p>
+                </div>
+              </div>
 
               <form onSubmit={handleUpload} style={{ display: "grid", gap: 14 }}>
                 <div>
@@ -705,9 +686,7 @@ export default function ByproductsTemplatesPage() {
                 <div
                   style={{
                     display: "grid",
-                    gridTemplateColumns: isMobile
-                      ? "1fr"
-                      : "repeat(2, minmax(0, 1fr))",
+                    gridTemplateColumns: isPhone ? "1fr" : "repeat(2, minmax(0, 1fr))",
                     gap: 12,
                   }}
                 >
@@ -778,8 +757,8 @@ export default function ByproductsTemplatesPage() {
                         notes: e.target.value,
                       }))
                     }
-                    rows={3}
-                    style={{ ...inputStyle, minHeight: 90, paddingTop: 12 }}
+                    rows={4}
+                    style={{ ...inputStyle, minHeight: 96, padding: "12px 14px" }}
                     placeholder="Optional notes"
                   />
                 </div>
@@ -787,7 +766,7 @@ export default function ByproductsTemplatesPage() {
                 <div
                   style={{
                     display: "grid",
-                    gridTemplateColumns: isMobile ? "1fr" : "repeat(2, minmax(0, 1fr))",
+                    gridTemplateColumns: isPhone ? "1fr" : "repeat(2, minmax(0, 1fr))",
                     gap: 10,
                   }}
                 >
@@ -822,27 +801,16 @@ export default function ByproductsTemplatesPage() {
 
                 <div
                   style={{
-                    display: "flex",
+                    display: "grid",
+                    gridTemplateColumns: isPhone ? "1fr" : "repeat(2, max-content)",
                     gap: 10,
-                    flexWrap: "wrap",
+                    alignItems: "center",
                   }}
                 >
                   <button
                     type="submit"
                     disabled={uploading}
-                    style={{
-                      minHeight: 44,
-                      padding: "0 16px",
-                      borderRadius: 12,
-                      border: "none",
-                      background: ORANGE,
-                      color: "#fff",
-                      fontSize: 14,
-                      fontWeight: 800,
-                      cursor: uploading ? "not-allowed" : "pointer",
-                      opacity: uploading ? 0.7 : 1,
-                      width: isMobile ? "100%" : "auto",
-                    }}
+                    style={primaryButtonStyle(isPhone, uploading)}
                   >
                     {uploading ? "Uploading..." : "Upload Template"}
                   </button>
@@ -850,7 +818,7 @@ export default function ByproductsTemplatesPage() {
                   <button
                     type="button"
                     onClick={resetUploadForm}
-                    style={secondaryBtn(isMobile)}
+                    style={secondaryButtonStyle(isPhone)}
                   >
                     Clear
                   </button>
@@ -858,25 +826,15 @@ export default function ByproductsTemplatesPage() {
               </form>
             </section>
 
-            <section
-              style={{
-                background: SURFACE,
-                border: `1px solid ${BORDER}`,
-                borderRadius: 22,
-                padding: isMobile ? 16 : 18,
-                boxShadow: SHADOW,
-              }}
-            >
-              <h2
-                style={{
-                  margin: "0 0 14px",
-                  color: TEXT,
-                  fontSize: 18,
-                  fontWeight: 800,
-                }}
-              >
-                Edit Template
-              </h2>
+            <section id="edit-template-section" style={panelStyle(isPhone ? 16 : 18)}>
+              <div style={sectionHeaderStyle}>
+                <div>
+                  <h2 style={sectionTitleStyle}>Edit Template</h2>
+                  <p style={sectionTextStyle}>
+                    Select any template from the list below to load it here for editing.
+                  </p>
+                </div>
+              </div>
 
               <form onSubmit={handleEditSave} style={{ display: "grid", gap: 14 }}>
                 <div>
@@ -909,9 +867,7 @@ export default function ByproductsTemplatesPage() {
                 <div
                   style={{
                     display: "grid",
-                    gridTemplateColumns: isMobile
-                      ? "1fr"
-                      : "repeat(2, minmax(0, 1fr))",
+                    gridTemplateColumns: isPhone ? "1fr" : "repeat(2, minmax(0, 1fr))",
                     gap: 12,
                   }}
                 >
@@ -963,8 +919,8 @@ export default function ByproductsTemplatesPage() {
                         notes: e.target.value,
                       }))
                     }
-                    rows={3}
-                    style={{ ...inputStyle, minHeight: 90, paddingTop: 12 }}
+                    rows={4}
+                    style={{ ...inputStyle, minHeight: 96, padding: "12px 14px" }}
                     placeholder="Optional notes"
                   />
                 </div>
@@ -972,7 +928,7 @@ export default function ByproductsTemplatesPage() {
                 <div
                   style={{
                     display: "grid",
-                    gridTemplateColumns: isMobile ? "1fr" : "repeat(2, minmax(0, 1fr))",
+                    gridTemplateColumns: isPhone ? "1fr" : "repeat(2, minmax(0, 1fr))",
                     gap: 10,
                   }}
                 >
@@ -1007,28 +963,16 @@ export default function ByproductsTemplatesPage() {
 
                 <div
                   style={{
-                    display: "flex",
+                    display: "grid",
+                    gridTemplateColumns: isPhone ? "1fr" : "repeat(2, max-content)",
                     gap: 10,
-                    flexWrap: "wrap",
+                    alignItems: "center",
                   }}
                 >
                   <button
                     type="submit"
                     disabled={savingEdit || !editForm.id}
-                    style={{
-                      minHeight: 44,
-                      padding: "0 16px",
-                      borderRadius: 12,
-                      border: "none",
-                      background: ORANGE,
-                      color: "#fff",
-                      fontSize: 14,
-                      fontWeight: 800,
-                      cursor:
-                        savingEdit || !editForm.id ? "not-allowed" : "pointer",
-                      opacity: savingEdit || !editForm.id ? 0.7 : 1,
-                      width: isMobile ? "100%" : "auto",
-                    }}
+                    style={primaryButtonStyle(isPhone, savingEdit || !editForm.id)}
                   >
                     {savingEdit ? "Saving..." : "Update Template"}
                   </button>
@@ -1036,7 +980,7 @@ export default function ByproductsTemplatesPage() {
                   <button
                     type="button"
                     onClick={resetEditForm}
-                    style={secondaryBtn(isMobile)}
+                    style={secondaryButtonStyle(isPhone)}
                   >
                     Clear
                   </button>
@@ -1046,41 +990,23 @@ export default function ByproductsTemplatesPage() {
 
             <section
               style={{
-                background: SURFACE,
-                border: `1px solid ${BORDER}`,
-                borderRadius: 22,
-                padding: isMobile ? 16 : 18,
-                boxShadow: SHADOW,
+                ...panelStyle(isPhone ? 16 : 18),
+                minWidth: 0,
               }}
             >
               <div
                 style={{
-                  display: "flex",
-                  justifyContent: "space-between",
+                  display: "grid",
+                  gridTemplateColumns: isPhone ? "1fr" : "minmax(0, 1fr) max-content",
                   gap: 12,
-                  flexWrap: "wrap",
+                  alignItems: "center",
                   marginBottom: 14,
                 }}
               >
-                <div>
-                  <h2
-                    style={{
-                      margin: 0,
-                      color: TEXT,
-                      fontSize: 18,
-                      fontWeight: 800,
-                    }}
-                  >
-                    Template List
-                  </h2>
-                  <p
-                    style={{
-                      margin: "6px 0 0",
-                      color: MUTED,
-                      fontSize: 13,
-                    }}
-                  >
-                    Search, preview placeholders, replace files, set defaults, and manage status.
+                <div style={{ minWidth: 0 }}>
+                  <h2 style={sectionTitleStyle}>Template List</h2>
+                  <p style={sectionTextStyle}>
+                    Search, preview placeholders, replace files, set default templates, and manage status.
                   </p>
                 </div>
 
@@ -1088,7 +1014,7 @@ export default function ByproductsTemplatesPage() {
                   type="button"
                   onClick={loadTemplates}
                   disabled={tableLoading}
-                  style={secondaryBtn(isMobile)}
+                  style={secondaryButtonStyle(isPhone)}
                 >
                   {tableLoading ? "Refreshing..." : "Refresh"}
                 </button>
@@ -1097,9 +1023,11 @@ export default function ByproductsTemplatesPage() {
               <div
                 style={{
                   display: "grid",
-                  gridTemplateColumns: isMobile
+                  gridTemplateColumns: isPhone
                     ? "1fr"
-                    : "minmax(180px, 1fr) 180px 160px 160px auto auto",
+                    : isTablet
+                    ? "repeat(2, minmax(0, 1fr))"
+                    : "minmax(200px, 1.3fr) repeat(4, minmax(140px, 1fr))",
                   gap: 12,
                   marginBottom: 16,
                 }}
@@ -1189,6 +1117,7 @@ export default function ByproductsTemplatesPage() {
                     color: TEXT,
                     fontSize: 13,
                     fontWeight: 700,
+                    boxSizing: "border-box",
                   }}
                 >
                   <input
@@ -1210,29 +1139,44 @@ export default function ByproductsTemplatesPage() {
                   style={{
                     border: `1px solid ${BORDER}`,
                     borderRadius: 16,
-                    padding: 14,
+                    padding: isPhone ? 12 : 14,
                     background: "#fff",
                     marginBottom: 16,
                   }}
                 >
                   <div
                     style={{
-                      display: "flex",
-                      justifyContent: "space-between",
+                      display: "grid",
+                      gridTemplateColumns: isPhone ? "1fr" : "minmax(0, 1fr) max-content",
                       gap: 10,
-                      flexWrap: "wrap",
                       alignItems: "center",
                       marginBottom: 10,
                     }}
                   >
-                    <div
-                      style={{
-                        color: TEXT,
-                        fontSize: 15,
-                        fontWeight: 800,
-                      }}
-                    >
-                      Placeholder Preview
+                    <div style={{ minWidth: 0 }}>
+                      <div
+                        style={{
+                          color: TEXT,
+                          fontSize: 15,
+                          fontWeight: 800,
+                          lineHeight: 1.3,
+                          wordBreak: "break-word",
+                        }}
+                      >
+                        Placeholder Preview
+                      </div>
+                      {selectedTemplateName ? (
+                        <div
+                          style={{
+                            marginTop: 4,
+                            color: MUTED,
+                            fontSize: 13,
+                            wordBreak: "break-word",
+                          }}
+                        >
+                          {selectedTemplateName}
+                        </div>
+                      ) : null}
                     </div>
 
                     <button
@@ -1241,31 +1185,14 @@ export default function ByproductsTemplatesPage() {
                         setSelectedPlaceholderTemplate(null);
                         setSelectedPlaceholders([]);
                       }}
-                      style={{
-                        minHeight: 34,
-                        padding: "0 10px",
-                        borderRadius: 10,
-                        border: `1px solid ${BORDER}`,
-                        background: "#fff",
-                        color: TEXT,
-                        fontSize: 12,
-                        fontWeight: 800,
-                        cursor: "pointer",
-                      }}
+                      style={smallSecondaryButton}
                     >
                       Close
                     </button>
                   </div>
 
                   {selectedPlaceholders.length === 0 ? (
-                    <div
-                      style={{
-                        color: MUTED,
-                        fontSize: 13,
-                      }}
-                    >
-                      No placeholders found.
-                    </div>
+                    <div style={{ color: MUTED, fontSize: 13 }}>No placeholders found.</div>
                   ) : (
                     <div
                       style={{
@@ -1280,13 +1207,15 @@ export default function ByproductsTemplatesPage() {
                           style={{
                             display: "inline-flex",
                             alignItems: "center",
-                            padding: "7px 10px",
+                            minHeight: 32,
+                            padding: "0 12px",
                             borderRadius: 999,
                             background: ORANGE_SOFT,
                             color: ORANGE_DEEP,
                             fontSize: 12,
                             fontWeight: 700,
                             wordBreak: "break-word",
+                            maxWidth: "100%",
                           }}
                         >
                           {item}
@@ -1302,7 +1231,7 @@ export default function ByproductsTemplatesPage() {
                   style={{
                     border: `1px dashed ${BORDER}`,
                     borderRadius: 16,
-                    padding: "22px 14px",
+                    padding: "24px 14px",
                     textAlign: "center",
                     color: MUTED,
                     fontSize: 14,
@@ -1311,228 +1240,248 @@ export default function ByproductsTemplatesPage() {
                 >
                   {tableLoading ? "Loading templates..." : "No templates found."}
                 </div>
-              ) : isMobile ? (
-                <div style={{ display: "grid", gap: 12 }}>
-                  {templates.map((template) => (
-                    <div
-                      key={template?.id}
-                      style={{
-                        border: `1px solid ${BORDER}`,
-                        borderRadius: 16,
-                        padding: 14,
-                        background: "#fff",
-                      }}
-                    >
-                      <div
+              ) : useCardList ? (
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: isPhone ? "1fr" : "repeat(2, minmax(0, 1fr))",
+                    gap: 14,
+                  }}
+                >
+                  {templates.map((template) => {
+                    const isDeleted = !!template?.is_deleted;
+                    const currentReplaceFile = replaceFiles[template?.id];
+
+                    return (
+                      <article
+                        key={template?.id}
                         style={{
-                          display: "flex",
-                          justifyContent: "space-between",
-                          gap: 12,
-                          alignItems: "flex-start",
-                          marginBottom: 10,
+                          border: `1px solid ${BORDER}`,
+                          borderRadius: 18,
+                          padding: isPhone ? 13 : 14,
+                          background: "#fff",
+                          minWidth: 0,
                         }}
                       >
-                        <div style={{ minWidth: 0 }}>
-                          <div
-                            style={{
-                              color: TEXT,
-                              fontSize: 15,
-                              fontWeight: 800,
-                              lineHeight: 1.35,
-                              wordBreak: "break-word",
-                            }}
-                          >
-                            {template?.name || "Unnamed Template"}
-                          </div>
-                          <div
-                            style={{
-                              color: MUTED,
-                              fontSize: 12,
-                              marginTop: 4,
-                              wordBreak: "break-word",
-                            }}
-                          >
-                            {template?.template_code || "—"}
-                          </div>
-                        </div>
-
                         <div
                           style={{
-                            display: "flex",
-                            gap: 8,
-                            flexWrap: "wrap",
-                            justifyContent: "flex-end",
-                          }}
-                        >
-                          <DefaultPill isDefault={template?.is_default} />
-                          <StatusPill
-                            active={template?.is_active}
-                            deleted={template?.is_deleted}
-                          />
-                        </div>
-                      </div>
-
-                      <div style={{ display: "grid", gap: 6, color: TEXT, fontSize: 13 }}>
-                        <div>
-                          <span style={mobileLabelStyle}>Type:</span>{" "}
-                          {valueText(template?.template_type)}
-                        </div>
-                        <div>
-                          <span style={mobileLabelStyle}>Format:</span>{" "}
-                          {valueText(template?.template_format)}
-                        </div>
-                        <div>
-                          <span style={mobileLabelStyle}>File:</span>{" "}
-                          {valueText(template?.file_name)}
-                        </div>
-                        <div>
-                          <span style={mobileLabelStyle}>Size:</span>{" "}
-                          {formatFileSize(template?.file_size_bytes)}
-                        </div>
-                        <div>
-                          <span style={mobileLabelStyle}>Placeholders:</span>{" "}
-                          {placeholderCount(template)}
-                        </div>
-                        <div>
-                          <span style={mobileLabelStyle}>Notes:</span>{" "}
-                          {valueText(template?.notes)}
-                        </div>
-                      </div>
-
-                      {!template?.is_deleted ? (
-                        <div
-                          style={{
-                            marginTop: 14,
                             display: "grid",
-                            gap: 10,
+                            gridTemplateColumns: "minmax(0, 1fr)",
+                            gap: 12,
                           }}
                         >
-                          <input
-                            type="file"
-                            accept={
-                              template?.template_format === "html"
-                                ? ".html,text/html"
-                                : ".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                            }
-                            onChange={(e) =>
-                              setReplaceFiles((prev) => ({
-                                ...prev,
-                                [template.id]: e.target.files?.[0] || null,
-                              }))
-                            }
-                            style={fileInputStyle}
-                          />
+                          <div
+                            style={{
+                              display: "grid",
+                              gridTemplateColumns: "minmax(0, 1fr)",
+                              gap: 10,
+                            }}
+                          >
+                            <div style={{ minWidth: 0 }}>
+                              <div
+                                style={{
+                                  color: TEXT,
+                                  fontSize: 15,
+                                  fontWeight: 800,
+                                  lineHeight: 1.35,
+                                  wordBreak: "break-word",
+                                }}
+                              >
+                                {template?.name || "Unnamed Template"}
+                              </div>
+
+                              <div
+                                style={{
+                                  color: MUTED,
+                                  fontSize: 12,
+                                  marginTop: 4,
+                                  wordBreak: "break-word",
+                                }}
+                              >
+                                {template?.template_code || "—"}
+                              </div>
+                            </div>
+
+                            <div
+                              style={{
+                                display: "flex",
+                                flexWrap: "wrap",
+                                gap: 8,
+                              }}
+                            >
+                              <DefaultPill isDefault={template?.is_default} />
+                              <StatusPill
+                                active={template?.is_active}
+                                deleted={template?.is_deleted}
+                              />
+                            </div>
+                          </div>
 
                           <div
                             style={{
                               display: "grid",
-                              gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-                              gap: 10,
+                              gap: 7,
+                              fontSize: 13,
+                              color: TEXT,
                             }}
                           >
-                            <button
-                              type="button"
-                              onClick={() => startEdit(template)}
-                              style={mobileActionBtn}
-                            >
-                              Edit
-                            </button>
-
-                            {!template?.is_default ? (
-                              <button
-                                type="button"
-                                onClick={() => handleSetDefault(template?.id)}
-                                disabled={settingDefaultId === template?.id}
-                                style={mobileActionBtn}
-                              >
-                                {settingDefaultId === template?.id
-                                  ? "Saving..."
-                                  : "Set Default"}
-                              </button>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={() => handlePreviewPlaceholders(template)}
-                                disabled={placeholderLoadingId === template?.id}
-                                style={mobileActionBtn}
-                              >
-                                {placeholderLoadingId === template?.id
-                                  ? "Loading..."
-                                  : "Placeholders"}
-                              </button>
-                            )}
-
-                            <button
-                              type="button"
-                              onClick={() => handleRefreshPlaceholders(template?.id)}
-                              disabled={refreshingId === template?.id}
-                              style={mobileActionBtn}
-                            >
-                              {refreshingId === template?.id
-                                ? "Refreshing..."
-                                : "Refresh Tags"}
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => handleReplaceFile(template?.id)}
-                              disabled={replaceFileId === template?.id}
-                              style={mobileActionBtn}
-                            >
-                              {replaceFileId === template?.id
-                                ? "Replacing..."
-                                : "Replace File"}
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => handlePreviewPlaceholders(template)}
-                              disabled={placeholderLoadingId === template?.id}
-                              style={mobileActionBtn}
-                            >
-                              {placeholderLoadingId === template?.id
-                                ? "Loading..."
-                                : "View Tags"}
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => handleDelete(template?.id)}
-                              disabled={deletingId === template?.id}
-                              style={{ ...mobileActionBtn, color: RED }}
-                            >
-                              {deletingId === template?.id ? "Deleting..." : "Delete"}
-                            </button>
+                            <InfoRow label="Type" value={valueText(template?.template_type)} />
+                            <InfoRow label="Format" value={valueText(template?.template_format)} />
+                            <InfoRow label="File" value={valueText(template?.file_name)} />
+                            <InfoRow
+                              label="Size"
+                              value={formatFileSize(template?.file_size_bytes)}
+                            />
+                            <InfoRow
+                              label="Placeholders"
+                              value={String(placeholderCount(template))}
+                            />
+                            <InfoRow label="Notes" value={valueText(template?.notes)} />
                           </div>
+
+                          {!isDeleted ? (
+                            <>
+                              <div>
+                                <label style={labelStyle}>Replace File</label>
+                                <input
+                                  type="file"
+                                  accept={
+                                    template?.template_format === "html"
+                                      ? ".html,text/html"
+                                      : ".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                                  }
+                                  onChange={(e) =>
+                                    setReplaceFiles((prev) => ({
+                                      ...prev,
+                                      [template.id]: e.target.files?.[0] || null,
+                                    }))
+                                  }
+                                  style={fileInputStyle}
+                                />
+                                {currentReplaceFile ? (
+                                  <div
+                                    style={{
+                                      marginTop: 6,
+                                      color: MUTED,
+                                      fontSize: 12,
+                                      wordBreak: "break-word",
+                                    }}
+                                  >
+                                    Selected: {currentReplaceFile.name}
+                                  </div>
+                                ) : null}
+                              </div>
+
+                              <div
+                                style={{
+                                  display: "grid",
+                                  gridTemplateColumns: isPhone
+                                    ? "repeat(2, minmax(0, 1fr))"
+                                    : "repeat(3, minmax(0, 1fr))",
+                                  gap: 10,
+                                }}
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => startEdit(template)}
+                                  style={cardActionButton}
+                                >
+                                  Edit
+                                </button>
+
+                                {!template?.is_default ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleSetDefault(template?.id)}
+                                    disabled={settingDefaultId === template?.id}
+                                    style={cardActionButton}
+                                  >
+                                    {settingDefaultId === template?.id
+                                      ? "Saving..."
+                                      : "Set Default"}
+                                  </button>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => handlePreviewPlaceholders(template)}
+                                    disabled={placeholderLoadingId === template?.id}
+                                    style={cardActionButton}
+                                  >
+                                    {placeholderLoadingId === template?.id
+                                      ? "Loading..."
+                                      : "View Tags"}
+                                  </button>
+                                )}
+
+                                <button
+                                  type="button"
+                                  onClick={() => handleRefreshPlaceholders(template?.id)}
+                                  disabled={refreshingId === template?.id}
+                                  style={cardActionButton}
+                                >
+                                  {refreshingId === template?.id
+                                    ? "Refreshing..."
+                                    : "Refresh Tags"}
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={() => handleReplaceFile(template?.id)}
+                                  disabled={replaceFileId === template?.id}
+                                  style={cardActionButton}
+                                >
+                                  {replaceFileId === template?.id
+                                    ? "Replacing..."
+                                    : "Replace File"}
+                                </button>
+
+                                {!template?.is_default ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => handlePreviewPlaceholders(template)}
+                                    disabled={placeholderLoadingId === template?.id}
+                                    style={cardActionButton}
+                                  >
+                                    {placeholderLoadingId === template?.id
+                                      ? "Loading..."
+                                      : "View Tags"}
+                                  </button>
+                                ) : null}
+
+                                <button
+                                  type="button"
+                                  onClick={() => handleDelete(template?.id)}
+                                  disabled={deletingId === template?.id}
+                                  style={{ ...cardActionButton, color: RED }}
+                                >
+                                  {deletingId === template?.id ? "Deleting..." : "Delete"}
+                                </button>
+                              </div>
+                            </>
+                          ) : (
+                            <div>
+                              <button
+                                type="button"
+                                onClick={() => handleRestore(template?.id)}
+                                disabled={restoringId === template?.id}
+                                style={{ ...cardActionButton, color: GREEN, width: "100%" }}
+                              >
+                                {restoringId === template?.id ? "Restoring..." : "Restore"}
+                              </button>
+                            </div>
+                          )}
                         </div>
-                      ) : (
-                        <div
-                          style={{
-                            display: "grid",
-                            gridTemplateColumns: "1fr",
-                            gap: 10,
-                            marginTop: 14,
-                          }}
-                        >
-                          <button
-                            type="button"
-                            onClick={() => handleRestore(template?.id)}
-                            disabled={restoringId === template?.id}
-                            style={{ ...mobileActionBtn, color: GREEN }}
-                          >
-                            {restoringId === template?.id ? "Restoring..." : "Restore"}
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  ))}
+                      </article>
+                    );
+                  })}
                 </div>
               ) : (
                 <div
                   style={{
                     overflowX: "auto",
                     border: `1px solid ${BORDER}`,
-                    borderRadius: 16,
+                    borderRadius: 18,
+                    background: "#fff",
                   }}
                 >
                   <table
@@ -1558,75 +1507,86 @@ export default function ByproductsTemplatesPage() {
                           "Replace File",
                           "Action",
                         ].map((head) => (
-                          <th
-                            key={head}
-                            style={tableHeadStyle}
-                          >
+                          <th key={head} style={tableHeadStyle}>
                             {head}
                           </th>
                         ))}
                       </tr>
                     </thead>
                     <tbody>
-                      {templates.map((template) => (
-                        <tr key={template?.id}>
-                          <td style={cellStyleStrong}>{valueText(template?.name)}</td>
-                          <td style={cellStyle}>{valueText(template?.template_code)}</td>
-                          <td style={cellStyle}>{valueText(template?.template_type)}</td>
-                          <td style={cellStyle}>{valueText(template?.template_format)}</td>
-                          <td style={cellStyle}>{valueText(template?.file_name)}</td>
-                          <td style={cellStyle}>{formatFileSize(template?.file_size_bytes)}</td>
-                          <td style={cellStyle}>{placeholderCount(template)}</td>
-                          <td style={cellStyle}>
-                            <DefaultPill isDefault={template?.is_default} />
-                          </td>
-                          <td style={cellStyle}>
-                            <StatusPill
-                              active={template?.is_active}
-                              deleted={template?.is_deleted}
-                            />
-                          </td>
-                          <td style={cellStyle}>
-                            {!template?.is_deleted ? (
-                              <div style={{ display: "grid", gap: 8 }}>
-                                <input
-                                  type="file"
-                                  accept={
-                                    template?.template_format === "html"
-                                      ? ".html,text/html"
-                                      : ".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                                  }
-                                  onChange={(e) =>
-                                    setReplaceFiles((prev) => ({
-                                      ...prev,
-                                      [template.id]: e.target.files?.[0] || null,
-                                    }))
-                                  }
-                                  style={fileInputStyle}
-                                />
-                                <button
-                                  type="button"
-                                  onClick={() => handleReplaceFile(template?.id)}
-                                  disabled={replaceFileId === template?.id}
-                                  style={smallActionBtn}
-                                >
-                                  {replaceFileId === template?.id
-                                    ? "Replacing..."
-                                    : "Replace"}
-                                </button>
-                              </div>
-                            ) : (
-                              "—"
-                            )}
-                          </td>
-                          <td style={cellStyle}>
-                            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                              {!template?.is_deleted ? (
-                                <>
+                      {templates.map((template) => {
+                        const isDeleted = !!template?.is_deleted;
+                        const currentReplaceFile = replaceFiles[template?.id];
+
+                        return (
+                          <tr key={template?.id}>
+                            <td style={cellStrongStyle}>{valueText(template?.name)}</td>
+                            <td style={cellStyle}>{valueText(template?.template_code)}</td>
+                            <td style={cellStyle}>{valueText(template?.template_type)}</td>
+                            <td style={cellStyle}>{valueText(template?.template_format)}</td>
+                            <td style={cellStyle}>{valueText(template?.file_name)}</td>
+                            <td style={cellStyle}>
+                              {formatFileSize(template?.file_size_bytes)}
+                            </td>
+                            <td style={cellStyle}>{placeholderCount(template)}</td>
+                            <td style={cellStyle}>
+                              <DefaultPill isDefault={template?.is_default} />
+                            </td>
+                            <td style={cellStyle}>
+                              <StatusPill
+                                active={template?.is_active}
+                                deleted={template?.is_deleted}
+                              />
+                            </td>
+                            <td style={cellStyle}>
+                              {!isDeleted ? (
+                                <div style={{ display: "grid", gap: 8, minWidth: 220 }}>
+                                  <input
+                                    type="file"
+                                    accept={
+                                      template?.template_format === "html"
+                                        ? ".html,text/html"
+                                        : ".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                                    }
+                                    onChange={(e) =>
+                                      setReplaceFiles((prev) => ({
+                                        ...prev,
+                                        [template.id]: e.target.files?.[0] || null,
+                                      }))
+                                    }
+                                    style={fileInputStyle}
+                                  />
+                                  {currentReplaceFile ? (
+                                    <div
+                                      style={{
+                                        color: MUTED,
+                                        fontSize: 12,
+                                        wordBreak: "break-word",
+                                      }}
+                                    >
+                                      Selected: {currentReplaceFile.name}
+                                    </div>
+                                  ) : null}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleReplaceFile(template?.id)}
+                                    disabled={replaceFileId === template?.id}
+                                    style={smallActionButton}
+                                  >
+                                    {replaceFileId === template?.id ? "Replacing..." : "Replace"}
+                                  </button>
+                                </div>
+                              ) : (
+                                "—"
+                              )}
+                            </td>
+                            <td style={cellStyle}>
+                              {!isDeleted ? (
+                                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                                   <button
                                     type="button"
                                     onClick={() => startEdit(template)}
-                                    style={actionBtn}
+                                    style={actionButton}
                                   >
                                     Edit
                                   </button>
@@ -1636,7 +1596,7 @@ export default function ByproductsTemplatesPage() {
                                       type="button"
                                       onClick={() => handleSetDefault(template?.id)}
                                       disabled={settingDefaultId === template?.id}
-                                      style={actionBtn}
+                                      style={actionButton}
                                     >
                                       {settingDefaultId === template?.id
                                         ? "Saving..."
@@ -1648,7 +1608,7 @@ export default function ByproductsTemplatesPage() {
                                     type="button"
                                     onClick={() => handleRefreshPlaceholders(template?.id)}
                                     disabled={refreshingId === template?.id}
-                                    style={actionBtn}
+                                    style={actionButton}
                                   >
                                     {refreshingId === template?.id
                                       ? "Refreshing..."
@@ -1659,7 +1619,7 @@ export default function ByproductsTemplatesPage() {
                                     type="button"
                                     onClick={() => handlePreviewPlaceholders(template)}
                                     disabled={placeholderLoadingId === template?.id}
-                                    style={actionBtn}
+                                    style={actionButton}
                                   >
                                     {placeholderLoadingId === template?.id
                                       ? "Loading..."
@@ -1670,25 +1630,25 @@ export default function ByproductsTemplatesPage() {
                                     type="button"
                                     onClick={() => handleDelete(template?.id)}
                                     disabled={deletingId === template?.id}
-                                    style={{ ...actionBtn, color: RED }}
+                                    style={{ ...actionButton, color: RED }}
                                   >
                                     {deletingId === template?.id ? "Deleting..." : "Delete"}
                                   </button>
-                                </>
+                                </div>
                               ) : (
                                 <button
                                   type="button"
                                   onClick={() => handleRestore(template?.id)}
                                   disabled={restoringId === template?.id}
-                                  style={{ ...actionBtn, color: GREEN }}
+                                  style={{ ...actionButton, color: GREEN }}
                                 >
                                   {restoringId === template?.id ? "Restoring..." : "Restore"}
                                 </button>
                               )}
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -1701,10 +1661,84 @@ export default function ByproductsTemplatesPage() {
   );
 }
 
-function secondaryBtn(isMobile) {
+function InfoRow({ label, value }) {
+  return (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "98px minmax(0, 1fr)",
+        gap: 10,
+        alignItems: "start",
+      }}
+    >
+      <span
+        style={{
+          color: MUTED,
+          fontWeight: 700,
+        }}
+      >
+        {label}:
+      </span>
+      <span
+        style={{
+          color: TEXT,
+          minWidth: 0,
+          wordBreak: "break-word",
+          lineHeight: 1.5,
+        }}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function panelStyle(padding) {
+  return {
+    background: SURFACE,
+    border: `1px solid ${BORDER}`,
+    borderRadius: RADIUS,
+    padding,
+    boxShadow: SHADOW,
+  };
+}
+
+function messageStyle(type) {
+  const isError = type === "error";
+  return {
+    marginTop: 16,
+    padding: "12px 14px",
+    borderRadius: 14,
+    background: isError ? RED_SOFT : GREEN_SOFT,
+    color: isError ? RED : GREEN,
+    fontSize: 13,
+    fontWeight: 700,
+    lineHeight: 1.6,
+    wordBreak: "break-word",
+  };
+}
+
+function primaryButtonStyle(isPhone, disabled) {
   return {
     minHeight: 44,
-    padding: "0 16px",
+    padding: isPhone ? "0 14px" : "0 16px",
+    borderRadius: 12,
+    border: "none",
+    background: ORANGE,
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: 800,
+    cursor: disabled ? "not-allowed" : "pointer",
+    opacity: disabled ? 0.72 : 1,
+    width: isPhone ? "100%" : "auto",
+    boxSizing: "border-box",
+  };
+}
+
+function secondaryButtonStyle(isPhone) {
+  return {
+    minHeight: 44,
+    padding: isPhone ? "0 14px" : "0 16px",
     borderRadius: 12,
     border: `1px solid ${BORDER}`,
     background: SURFACE,
@@ -1712,9 +1746,31 @@ function secondaryBtn(isMobile) {
     fontSize: 14,
     fontWeight: 800,
     cursor: "pointer",
-    width: isMobile ? "100%" : "auto",
+    width: isPhone ? "100%" : "auto",
+    boxSizing: "border-box",
   };
 }
+
+const sectionHeaderStyle = {
+  display: "grid",
+  gap: 6,
+  marginBottom: 14,
+};
+
+const sectionTitleStyle = {
+  margin: 0,
+  color: TEXT,
+  fontSize: 18,
+  fontWeight: 800,
+  lineHeight: 1.2,
+};
+
+const sectionTextStyle = {
+  margin: "4px 0 0",
+  color: MUTED,
+  fontSize: 13,
+  lineHeight: 1.6,
+};
 
 const inputStyle = {
   width: "100%",
@@ -1762,36 +1818,42 @@ const checkboxWrapStyle = {
   color: TEXT,
   fontSize: 13,
   fontWeight: 700,
+  boxSizing: "border-box",
 };
 
 const tableHeadStyle = {
   textAlign: "left",
-  padding: "13px 14px",
+  padding: "14px 14px",
   borderBottom: `1px solid ${BORDER}`,
   color: TEXT,
   fontSize: 13,
   fontWeight: 800,
   whiteSpace: "nowrap",
+  verticalAlign: "top",
 };
 
 const cellStyle = {
-  padding: "13px 14px",
+  padding: "14px",
   borderBottom: `1px solid ${BORDER}`,
   color: TEXT,
   fontSize: 13,
   verticalAlign: "top",
+  lineHeight: 1.5,
+  wordBreak: "break-word",
 };
 
-const cellStyleStrong = {
-  padding: "13px 14px",
+const cellStrongStyle = {
+  padding: "14px",
   borderBottom: `1px solid ${BORDER}`,
   color: TEXT,
   fontSize: 13,
   fontWeight: 800,
   verticalAlign: "top",
+  lineHeight: 1.5,
+  wordBreak: "break-word",
 };
 
-const actionBtn = {
+const actionButton = {
   minHeight: 34,
   padding: "0 10px",
   borderRadius: 10,
@@ -1803,8 +1865,8 @@ const actionBtn = {
   cursor: "pointer",
 };
 
-const smallActionBtn = {
-  minHeight: 32,
+const smallActionButton = {
+  minHeight: 34,
   padding: "0 10px",
   borderRadius: 10,
   border: `1px solid ${BORDER}`,
@@ -1813,9 +1875,10 @@ const smallActionBtn = {
   fontSize: 12,
   fontWeight: 800,
   cursor: "pointer",
+  width: "fit-content",
 };
 
-const mobileActionBtn = {
+const cardActionButton = {
   minHeight: 40,
   padding: "0 12px",
   borderRadius: 10,
@@ -1826,9 +1889,17 @@ const mobileActionBtn = {
   fontWeight: 800,
   cursor: "pointer",
   width: "100%",
+  boxSizing: "border-box",
 };
 
-const mobileLabelStyle = {
-  color: MUTED,
-  fontWeight: 700,
+const smallSecondaryButton = {
+  minHeight: 34,
+  padding: "0 10px",
+  borderRadius: 10,
+  border: `1px solid ${BORDER}`,
+  background: "#fff",
+  color: TEXT,
+  fontSize: 12,
+  fontWeight: 800,
+  cursor: "pointer",
 };
