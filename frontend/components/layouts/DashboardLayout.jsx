@@ -14,7 +14,8 @@ const ORANGE_SOFT = "rgba(255,122,0,0.12)";
 const BLUE = "#2563eb";
 const RED = "#b91c1c";
 const RED_SOFT = "rgba(185,28,28,0.08)";
-const SHADOW = "0 10px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.02)";
+const SHADOW =
+  "0 10px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.02)";
 const SHADOW_HOVER = "0 20px 30px -12px rgba(0, 0, 0, 0.1)";
 
 function MenuIcon({ open }) {
@@ -184,6 +185,21 @@ function AuditIcon() {
   );
 }
 
+function ByproductsIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M6 8.5 12 5l6 3.5v7L12 19l-6-3.5v-7Z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
+      <path d="M9 11.5h6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M9 14.5h4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 function LogoutIcon() {
   return (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -303,7 +319,7 @@ function getPageMeta(pathname) {
 
   if (pathname === "/reports" || pathname.startsWith("/reports/")) {
     return {
-      title: "Reports",
+      title: "Order Reports",
       subtitle: "Review reports, exports, and operational summaries.",
     };
   }
@@ -336,20 +352,26 @@ function getPageMeta(pathname) {
     };
   }
 
+  if (pathname === "/byproducts" || pathname.startsWith("/byproducts/")) {
+    return {
+      title: "Byproducts",
+      subtitle: "Manage byproducts sales, customers, reports, templates, and summaries.",
+    };
+  }
+
   return {
     title: "Dashboard",
     subtitle: "Manage operational records and reports.",
   };
 }
 
-// Helper to get user initials from name/email
 function getInitials(nameOrEmail) {
   if (!nameOrEmail) return "U";
-  const parts = nameOrEmail.split(" ");
+  const parts = String(nameOrEmail).trim().split(" ").filter(Boolean);
   if (parts.length >= 2) {
     return (parts[0][0] + parts[1][0]).toUpperCase();
   }
-  return nameOrEmail.slice(0, 2).toUpperCase();
+  return String(nameOrEmail).slice(0, 2).toUpperCase();
 }
 
 export default function DashboardLayout({
@@ -370,29 +392,37 @@ export default function DashboardLayout({
   const pageTitle = title || pageMeta.title;
   const pageSubtitle = subtitle || pageMeta.subtitle;
 
-  // Fetch current user
   useEffect(() => {
     let mounted = true;
+
     async function fetchUser() {
       try {
         setUserLoading(true);
-        // Try to get user from auth service (adjust method name as needed)
         const currentUser = await authService.getCurrentUser?.();
-        if (mounted) setUser(currentUser);
+        if (mounted) {
+          setUser(currentUser || null);
+        }
       } catch (err) {
         console.error("Failed to fetch user:", err);
-        if (mounted) setUser(null);
+        if (mounted) {
+          setUser(null);
+        }
       } finally {
-        if (mounted) setUserLoading(false);
+        if (mounted) {
+          setUserLoading(false);
+        }
       }
     }
+
     fetchUser();
-    return () => { mounted = false; };
+    return () => {
+      mounted = false;
+    };
   }, []);
 
-  // Responsive sync
   useEffect(() => {
     if (typeof window === "undefined") return;
+
     const sync = () => setIsMobile(window.innerWidth < 992);
     sync();
     window.addEventListener("resize", sync);
@@ -405,14 +435,18 @@ export default function DashboardLayout({
 
   async function handleLogout() {
     if (isLoggingOut) return;
+
     try {
       setIsLoggingOut(true);
+
       try {
         await authService?.logout?.();
       } catch (_) {}
+
       try {
         authService?.clearAuth?.();
       } catch (_) {}
+
       await router.replace("/login");
     } finally {
       setIsLoggingOut(false);
@@ -420,13 +454,54 @@ export default function DashboardLayout({
   }
 
   const navItems = [
-    { href: "/dashboard", label: "Dashboard", icon: <DashboardIcon />, active: router.pathname === "/dashboard" || router.pathname.startsWith("/dashboard/") },
-    { href: "/orders", label: "Orders", icon: <OrdersIcon />, active: router.pathname === "/orders" || router.pathname.startsWith("/orders/") },
-    { href: "/reports", label: "Order Reports", icon: <ReportsIcon />, active: router.pathname === "/reports" || router.pathname.startsWith("/reports/") },
-    { href: "/inventory", label: "Inventory", icon: <InventoryIcon />, active: router.pathname === "/inventory" || router.pathname.startsWith("/inventory/") },
-    { href: "/audit", label: "Audit", icon: <AuditIcon />, active: router.pathname === "/audit" || router.pathname.startsWith("/audit/") },
-    { href: "/breakeven", label: "Breakeven", icon: <BreakevenIcon />, active: router.pathname === "/breakeven" || router.pathname.startsWith("/breakeven/") },
-    { href: "/saas", label: "Slaughter Services", icon: <SaaSIcon />, active: router.pathname === "/saas" || router.pathname.startsWith("/saas/") },
+    {
+      href: "/dashboard",
+      label: "Dashboard",
+      icon: <DashboardIcon />,
+      active: router.pathname === "/dashboard" || router.pathname.startsWith("/dashboard/"),
+    },
+    {
+      href: "/orders",
+      label: "Orders",
+      icon: <OrdersIcon />,
+      active: router.pathname === "/orders" || router.pathname.startsWith("/orders/"),
+    },
+    {
+      href: "/reports",
+      label: "Order Reports",
+      icon: <ReportsIcon />,
+      active: router.pathname === "/reports" || router.pathname.startsWith("/reports/"),
+    },
+    {
+      href: "/inventory",
+      label: "Inventory",
+      icon: <InventoryIcon />,
+      active: router.pathname === "/inventory" || router.pathname.startsWith("/inventory/"),
+    },
+    {
+      href: "/audit",
+      label: "Audit",
+      icon: <AuditIcon />,
+      active: router.pathname === "/audit" || router.pathname.startsWith("/audit/"),
+    },
+    {
+      href: "/byproducts",
+      label: "Byproducts",
+      icon: <ByproductsIcon />,
+      active: router.pathname === "/byproducts" || router.pathname.startsWith("/byproducts/"),
+    },
+    {
+      href: "/breakeven",
+      label: "Breakeven",
+      icon: <BreakevenIcon />,
+      active: router.pathname === "/breakeven" || router.pathname.startsWith("/breakeven/"),
+    },
+    {
+      href: "/saas",
+      label: "Slaughter Services",
+      icon: <SaaSIcon />,
+      active: router.pathname === "/saas" || router.pathname.startsWith("/saas/"),
+    },
   ];
 
   const displayName = user?.name || user?.full_name || user?.email || "User";
@@ -449,7 +524,6 @@ export default function DashboardLayout({
           minHeight: "100vh",
         }}
       >
-        {/* DESKTOP SIDEBAR */}
         {!isMobile && (
           <aside
             style={{
@@ -471,7 +545,6 @@ export default function DashboardLayout({
                 gap: 24,
               }}
             >
-              {/* Logo / Brand */}
               <div
                 style={{
                   borderBottom: `1px solid ${BORDER}`,
@@ -502,12 +575,7 @@ export default function DashboardLayout({
                 </div>
               </div>
 
-              {/* Navigation */}
-              <div
-                style={{
-                  flex: 1,
-                }}
-              >
+              <div style={{ flex: 1 }}>
                 <div
                   style={{
                     fontSize: 11,
@@ -521,6 +589,7 @@ export default function DashboardLayout({
                 >
                   Main
                 </div>
+
                 <div style={{ display: "grid", gap: 6 }}>
                   {navItems.map((item) => (
                     <DashboardLink
@@ -534,7 +603,6 @@ export default function DashboardLayout({
                 </div>
               </div>
 
-              {/* User Profile + Logout */}
               <div
                 style={{
                   borderTop: `1px solid ${BORDER}`,
@@ -569,6 +637,7 @@ export default function DashboardLayout({
                   >
                     {userLoading ? "?" : userInitials}
                   </div>
+
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div
                       style={{
@@ -582,7 +651,8 @@ export default function DashboardLayout({
                     >
                       {userLoading ? "Loading..." : displayName}
                     </div>
-                    {userEmail && (
+
+                    {userEmail ? (
                       <div
                         style={{
                           fontSize: 11,
@@ -594,18 +664,17 @@ export default function DashboardLayout({
                       >
                         {userEmail}
                       </div>
-                    )}
+                    ) : null}
                   </div>
                 </div>
+
                 <LogoutButton onClick={handleLogout} disabled={isLoggingOut} />
               </div>
             </div>
           </aside>
         )}
 
-        {/* MAIN CONTENT AREA */}
         <div style={{ minWidth: 0, background: PAGE_BG }}>
-          {/* HEADER */}
           <header
             style={{
               position: "sticky",
@@ -638,7 +707,7 @@ export default function DashboardLayout({
                   minWidth: 0,
                 }}
               >
-                {isMobile && (
+                {isMobile ? (
                   <button
                     type="button"
                     onClick={() => setMobileOpen((prev) => !prev)}
@@ -658,7 +727,7 @@ export default function DashboardLayout({
                   >
                     <MenuIcon open={mobileOpen} />
                   </button>
-                )}
+                ) : null}
 
                 <div style={{ minWidth: 0 }}>
                   <h1
@@ -695,8 +764,8 @@ export default function DashboardLayout({
                 }}
               >
                 {actions}
-                {/* Compact user avatar + logout on desktop */}
-                {!isMobile && (
+
+                {!isMobile ? (
                   <div
                     style={{
                       display: "flex",
@@ -724,6 +793,7 @@ export default function DashboardLayout({
                     >
                       {userLoading ? "?" : userInitials}
                     </div>
+
                     <span
                       style={{
                         fontSize: 13,
@@ -737,16 +807,17 @@ export default function DashboardLayout({
                     >
                       {userLoading ? "Loading..." : displayName}
                     </span>
+
                     <LogoutButton compact onClick={handleLogout} disabled={isLoggingOut} />
                   </div>
+                ) : (
+                  <LogoutButton compact onClick={handleLogout} disabled={isLoggingOut} />
                 )}
-                {isMobile && <LogoutButton compact onClick={handleLogout} disabled={isLoggingOut} />}
               </div>
             </div>
           </header>
 
-          {/* MOBILE MENU DRAWER */}
-          {isMobile && mobileOpen && (
+          {isMobile && mobileOpen ? (
             <div
               style={{
                 position: "fixed",
@@ -766,11 +837,13 @@ export default function DashboardLayout({
                   top: 0,
                   left: 0,
                   width: "280px",
+                  maxWidth: "85vw",
                   height: "100%",
                   background: SURFACE,
                   boxShadow: SHADOW_HOVER,
                   padding: "24px 20px",
                   overflowY: "auto",
+                  boxSizing: "border-box",
                 }}
                 onClick={(e) => e.stopPropagation()}
               >
@@ -785,7 +858,7 @@ export default function DashboardLayout({
                       color: "transparent",
                     }}
                   >
-                    PrimeGate
+                    PG Analytics IQ
                   </div>
                   <div style={{ fontSize: 13, color: MUTED, marginTop: 4 }}>
                     Analytics Workspace
@@ -819,11 +892,34 @@ export default function DashboardLayout({
                   >
                     {userLoading ? "?" : userInitials}
                   </div>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 700, fontSize: 14 }}>
+
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div
+                      style={{
+                        fontWeight: 700,
+                        fontSize: 14,
+                        color: TEXT,
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                      }}
+                    >
                       {userLoading ? "Loading..." : displayName}
                     </div>
-                    {userEmail && <div style={{ fontSize: 11, color: MUTED }}>{userEmail}</div>}
+
+                    {userEmail ? (
+                      <div
+                        style={{
+                          fontSize: 11,
+                          color: MUTED,
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                        }}
+                      >
+                        {userEmail}
+                      </div>
+                    ) : null}
                   </div>
                 </div>
 
@@ -839,14 +935,14 @@ export default function DashboardLayout({
                     />
                   ))}
                 </div>
+
                 <div style={{ marginTop: 24 }}>
                   <LogoutButton onClick={handleLogout} disabled={isLoggingOut} />
                 </div>
               </div>
             </div>
-          )}
+          ) : null}
 
-          {/* MAIN CONTENT */}
           <main
             style={{
               width: "100%",

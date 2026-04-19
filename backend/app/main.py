@@ -1,5 +1,8 @@
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.core.database import Base, engine
 
@@ -7,9 +10,19 @@ from app.core.database import Base, engine
 from app.models import *  # noqa: F401,F403
 
 # Import route modules
-from app.routes import auth, users, orders, reports, saas, breakeven_report, inventory, audit
+from app.routes import (
+    audit,
+    auth,
+    breakeven_report,
+    byproducts,
+    inventory,
+    orders,
+    reports,
+    saas,
+    users,
+)
 
-# Create tables on startup (fine for local/dev; later we can move to Alembic)
+# Create tables on startup (fine for local/dev; later move to Alembic)
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
@@ -33,7 +46,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Auth
+# Ensure storage folders exist and expose them publicly
+storage_dir = Path("storage")
+storage_dir.mkdir(parents=True, exist_ok=True)
+(storage_dir / "byproducts" / "generated").mkdir(parents=True, exist_ok=True)
+(storage_dir / "byproducts" / "templates").mkdir(parents=True, exist_ok=True)
+
+app.mount("/storage", StaticFiles(directory=str(storage_dir)), name="storage")
+
+# Routers
 app.include_router(auth.router)
 app.include_router(users.router)
 app.include_router(orders.router)
@@ -42,6 +63,7 @@ app.include_router(saas.router)
 app.include_router(breakeven_report.router)
 app.include_router(inventory.router)
 app.include_router(audit.router)
+app.include_router(byproducts.router)
 
 
 @app.get("/", tags=["Health"])

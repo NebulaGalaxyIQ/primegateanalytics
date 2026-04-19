@@ -10,3 +10,7 @@ python-multipart==0.0.20
 pydantic==2.11.7
 email-validator==2.2.0
 reportlab
+jinja2
+docxtpl
+weasyprint
+docx2pdf
