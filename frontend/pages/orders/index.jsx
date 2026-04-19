@@ -1,34 +1,32 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/router";
+
 import OrderService from "../../services/orders";
 import { getToken } from "../../services/auth";
 
-/* ============================================================================
-   Orders Index Page
-   ----------------------------------------------------------------------------
-   Fixed:
-   - Uses the full unified columns requested
-   - Keeps General Orders / Frozen Containers views
-   - Keeps Local / Chilled / Frozen sub-tabs for General Orders
-   - report_month and report_year are only sent together
-   - stale responses are ignored when switching tabs quickly
-============================================================================ */
-
 const FONT_FAMILY = "Arial, sans-serif";
+
 const BG = "#ffffff";
+const SURFACE = "#ffffff";
 const TEXT = "#0f172a";
 const MUTED = "#64748b";
 const BORDER = "#e5e7eb";
 const SOFT = "#f8fafc";
+
 const BLUE = "#2563eb";
 const BLUE_SOFT = "rgba(37, 99, 235, 0.08)";
+
 const GREEN = "#16a34a";
 const GREEN_SOFT = "rgba(22, 163, 74, 0.10)";
+
 const ORANGE = "#f97316";
 const ORANGE_SOFT = "rgba(249, 115, 22, 0.10)";
+
 const RED = "#dc2626";
 const RED_SOFT = "rgba(220, 38, 38, 0.10)";
+
+const SHADOW = "0 10px 30px rgba(15, 23, 42, 0.05)";
 
 const MODE_GENERAL = "general";
 const MODE_FROZEN = "frozen_container";
@@ -68,10 +66,18 @@ function toSafeString(value) {
   return value === undefined || value === null ? "" : String(value);
 }
 
+function titleizeSlug(value) {
+  if (!value) return "—";
+  return String(value)
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 function formatDate(value) {
   if (!value) return "—";
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return String(value);
+
   return d.toLocaleDateString(undefined, {
     year: "numeric",
     month: "short",
@@ -83,6 +89,7 @@ function formatDateTime(value) {
   if (!value) return "—";
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return String(value);
+
   return d.toLocaleString(undefined, {
     year: "numeric",
     month: "short",
@@ -110,11 +117,12 @@ function formatNumber(value, maximumFractionDigits = 0) {
   }).format(Number.isFinite(num) ? num : 0);
 }
 
-function titleizeSlug(value) {
-  if (!value) return "—";
-  return String(value)
-    .replace(/_/g, " ")
-    .replace(/\b\w/g, (c) => c.toUpperCase());
+function compactSummary(order) {
+  const parts = [];
+  if (order?.product_summary) parts.push(order.product_summary);
+  if (order?.order_ratio) parts.push(order.order_ratio);
+  if (order?.jurisdiction) parts.push(order.jurisdiction);
+  return parts.join(" • ") || "—";
 }
 
 function statusPillStyle(status) {
@@ -151,16 +159,6 @@ function statusPillStyle(status) {
   };
 }
 
-function compactSummary(order) {
-  const parts = [];
-
-  if (order?.product_summary) parts.push(order.product_summary);
-  if (order?.order_ratio) parts.push(order.order_ratio);
-  if (order?.jurisdiction) parts.push(order.jurisdiction);
-
-  return parts.join(" • ") || "—";
-}
-
 function buildRequestFilters(mode, generalType, filters, page, pageSize) {
   const payload = {
     page,
@@ -191,7 +189,200 @@ function buildRequestFilters(mode, generalType, filters, page, pageSize) {
   return payload;
 }
 
-function OrdersIndexPage() {
+function Input({
+  label,
+  value,
+  onChange,
+  placeholder,
+  type = "text",
+  min,
+  max,
+}) {
+  return (
+    <label className="field">
+      <span className="fieldLabel">{label}</span>
+      <input
+        type={type}
+        value={value}
+        min={min}
+        max={max}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="fieldControl"
+      />
+    </label>
+  );
+}
+
+function Select({ label, value, onChange, options }) {
+  return (
+    <label className="field">
+      <span className="fieldLabel">{label}</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="fieldControl"
+      >
+        {options.map((option) => (
+          <option key={`${label}-${option.value}`} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function SummaryCard({ label, value, hint }) {
+  return (
+    <div className="summaryCard">
+      <div className="summaryLabel">{label}</div>
+      <div className="summaryValue">{value}</div>
+      <div className="summaryHint">{hint}</div>
+    </div>
+  );
+}
+
+function ModeButton({ active, children, onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`tabButton ${active ? "tabButtonActive" : ""}`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function SubTypeButton({ active, children, onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`subTabButton ${active ? "subTabButtonActive" : ""}`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function HeaderCell({ children, width }) {
+  return (
+    <th style={{ width }} className="tableHeaderCell">
+      {children}
+    </th>
+  );
+}
+
+function BodyCell({ children }) {
+  return <td className="tableBodyCell">{children}</td>;
+}
+
+function LoadingRows() {
+  return (
+    <div className="loadingRows">
+      {Array.from({ length: 7 }).map((_, index) => (
+        <div key={index} className="loadingRow" />
+      ))}
+    </div>
+  );
+}
+
+function MobileMetaItem({ label, value, fullWidth = false, valueStyle }) {
+  return (
+    <div className={`mobileMetaItem ${fullWidth ? "mobileMetaItemFull" : ""}`}>
+      <div className="mobileMetaLabel">{label}</div>
+      <div className="mobileMetaValue" style={valueStyle}>
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function MobileOrderCard({ order }) {
+  return (
+    <article className="mobileOrderCard">
+      <div className="mobileCardTop">
+        <div className="mobileCardIdentity">
+          <div className="mobileOrderNumber">{order.order_number || "—"}</div>
+          <div className="mobileOrderId">ID: {order.id}</div>
+          <div className="mobileEnterprise">{order.enterprise_name || "—"}</div>
+        </div>
+
+        <span
+          className="statusPill"
+          style={{
+            ...statusPillStyle(order.status),
+          }}
+        >
+          {titleizeSlug(order.status)}
+        </span>
+      </div>
+
+      <div className="mobileMetaGrid">
+        <MobileMetaItem label="Type" value={titleizeSlug(order.order_type)} />
+        <MobileMetaItem
+          label="Profile"
+          value={titleizeSlug(order.order_profile)}
+        />
+        <MobileMetaItem
+          label="Subtype"
+          value={titleizeSlug(order.order_subtype)}
+        />
+        <MobileMetaItem
+          label="Quantity"
+          value={`${formatNumber(order.total_quantity_kg, 2)} kg`}
+        />
+        <MobileMetaItem
+          label="Animals"
+          value={formatNumber(order.total_animals_required)}
+        />
+        <MobileMetaItem
+          label="Shipment"
+          value={formatMoney(order.shipment_value_usd)}
+        />
+        <MobileMetaItem
+          label="Paid"
+          value={formatMoney(order.amount_paid_usd)}
+        />
+        <MobileMetaItem
+          label="Balance"
+          value={formatMoney(order.balance_usd)}
+          valueStyle={{
+            color: Number(order.balance_usd || 0) > 0 ? ORANGE : TEXT,
+          }}
+        />
+        <MobileMetaItem
+          label="Slaughter"
+          value={formatDate(order.slaughter_schedule)}
+        />
+        <MobileMetaItem
+          label="Delivery"
+          value={formatDate(order.expected_delivery)}
+        />
+        <MobileMetaItem
+          label="Updated"
+          value={formatDateTime(order.updated_at)}
+          fullWidth
+        />
+        <MobileMetaItem
+          label="Summary"
+          value={compactSummary(order)}
+          fullWidth
+        />
+      </div>
+
+      <div className="mobileCardFooter">
+        <Link href={`/orders/${order.id}`} className="viewLink">
+          View order
+        </Link>
+      </div>
+    </article>
+  );
+}
+
+export default function OrdersIndexPage() {
   const router = useRouter();
   const fetchCounterRef = useRef(0);
 
@@ -264,11 +455,8 @@ function OrdersIndexPage() {
 
       try {
         setError("");
-        if (isRefresh) {
-          setRefreshing(true);
-        } else {
-          setLoading(true);
-        }
+        if (isRefresh) setRefreshing(true);
+        else setLoading(true);
 
         const response = await OrderService.list(requestFilters);
 
@@ -312,7 +500,6 @@ function OrdersIndexPage() {
 
   const handleGeneralTypeChange = (nextType) => {
     if (nextType === generalType) return;
-
     setGeneralType(nextType);
     setPage(1);
     setError("");
@@ -330,10 +517,7 @@ function OrdersIndexPage() {
   const handleApplyFilters = (e) => {
     e.preventDefault();
 
-    const nextFilters = {
-      ...draftFilters,
-    };
-
+    const nextFilters = { ...draftFilters };
     const month = toSafeString(nextFilters.report_month).trim();
     const year = toSafeString(nextFilters.report_year).trim();
 
@@ -372,114 +556,31 @@ function OrdersIndexPage() {
 
   if (!authReady) {
     return (
-      <div
-        style={{
-          minHeight: "100vh",
-          background: BG,
-          color: TEXT,
-          fontFamily: FONT_FAMILY,
-          padding: "18px 22px 32px",
-          boxSizing: "border-box",
-        }}
-      >
-        <LoadingRows />
+      <div className="pageShell">
+        <div className="pageContainer">
+          <LoadingRows />
+        </div>
+
+        <style jsx>{baseStyles}</style>
       </div>
     );
   }
 
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        background: BG,
-        color: TEXT,
-        fontFamily: FONT_FAMILY,
-      }}
-    >
-      <div
-        style={{
-          width: "100%",
-          maxWidth: "100%",
-          margin: 0,
-          padding: "18px 22px 32px",
-          boxSizing: "border-box",
-        }}
-      >
-        {error ? (
-          <div
-            style={{
-              color: RED,
-              background: RED_SOFT,
-              border: "1px solid rgba(220,38,38,0.18)",
-              borderRadius: 12,
-              padding: "12px 14px",
-              marginBottom: 14,
-              fontSize: 13,
-              lineHeight: 1.5,
-            }}
-          >
-            {error}
-          </div>
-        ) : null}
+    <div className="pageShell">
+      <div className="pageContainer">
+        {error ? <div className="errorBanner">{error}</div> : null}
 
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "flex-start",
-            gap: 16,
-            marginBottom: 16,
-            flexWrap: "wrap",
-          }}
-        >
-          <div>
-            <h1
-              style={{
-                margin: 0,
-                fontSize: 24,
-                lineHeight: 1.2,
-                fontWeight: 700,
-                letterSpacing: "-0.02em",
-              }}
-            >
-              Orders
-            </h1>
-            <p
-              style={{
-                margin: "6px 0 0",
-                color: MUTED,
-                fontSize: 13,
-                lineHeight: 1.5,
-              }}
-            >
+        <div className="headerRow">
+          <div className="headerText">
+            <h1 className="pageTitle">Orders</h1>
+            <p className="pageSubtitle">
               View order records by General Orders or Frozen Containers.
             </p>
           </div>
 
-          <div
-            style={{
-              display: "flex",
-              gap: 10,
-              alignItems: "center",
-              flexWrap: "wrap",
-            }}
-          >
-            <Link
-              href="/orders/create"
-              style={{
-                background: BLUE,
-                color: "#fff",
-                border: "none",
-                borderRadius: 10,
-                padding: "10px 16px",
-                fontSize: 13,
-                fontWeight: 700,
-                textDecoration: "none",
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
+          <div className="headerActions">
+            <Link href="/orders/create" className="primaryButton">
               Create Order
             </Link>
 
@@ -487,30 +588,14 @@ function OrdersIndexPage() {
               type="button"
               onClick={handleRefresh}
               disabled={refreshing || loading}
-              style={{
-                border: `1px solid ${BORDER}`,
-                background: "#fff",
-                color: TEXT,
-                borderRadius: 10,
-                padding: "10px 14px",
-                fontSize: 13,
-                fontWeight: 600,
-                cursor: refreshing || loading ? "not-allowed" : "pointer",
-              }}
+              className="secondaryButton"
             >
               {refreshing ? "Refreshing..." : "Refresh"}
             </button>
           </div>
         </div>
 
-        <div
-          style={{
-            display: "flex",
-            gap: 10,
-            flexWrap: "wrap",
-            marginBottom: 16,
-          }}
-        >
+        <div className="tabRow">
           <ModeButton
             active={mode === MODE_GENERAL}
             onClick={() => handleModeChange(MODE_GENERAL)}
@@ -527,14 +612,7 @@ function OrdersIndexPage() {
         </div>
 
         {mode === MODE_GENERAL ? (
-          <div
-            style={{
-              display: "flex",
-              gap: 8,
-              flexWrap: "wrap",
-              marginBottom: 16,
-            }}
-          >
+          <div className="subTabRow">
             {GENERAL_TYPE_TABS.map((tab) => (
               <SubTypeButton
                 key={tab.value}
@@ -547,14 +625,7 @@ function OrdersIndexPage() {
           </div>
         ) : null}
 
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(4, minmax(180px, 1fr))",
-            gap: 12,
-            marginBottom: 16,
-          }}
-        >
+        <div className="summaryGrid">
           <SummaryCard
             label="Total records"
             value={formatNumber(total)}
@@ -581,61 +652,21 @@ function OrdersIndexPage() {
           />
         </div>
 
-        <form
-          onSubmit={handleApplyFilters}
-          style={{
-            border: `1px solid ${BORDER}`,
-            borderRadius: 16,
-            background: "#fff",
-            marginBottom: 16,
-            overflow: "hidden",
-          }}
-        >
-          <div
-            style={{
-              padding: "14px 16px",
-              borderBottom: `1px solid ${BORDER}`,
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              gap: 12,
-              flexWrap: "wrap",
-            }}
-          >
+        <form onSubmit={handleApplyFilters} className="panel">
+          <div className="panelHeader">
             <div>
-              <div
-                style={{
-                  fontSize: 15,
-                  fontWeight: 700,
-                }}
-              >
-                Filters
-              </div>
-              <div
-                style={{
-                  fontSize: 12,
-                  color: MUTED,
-                  marginTop: 4,
-                }}
-              >
+              <div className="panelTitle">Filters</div>
+              <div className="panelSubtitle">
                 Report month and year must be filled together.
               </div>
             </div>
 
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                fontSize: 12,
-                color: MUTED,
-              }}
-            >
-              <span>Rows per page</span>
+            <div className="rowsControl">
+              <span className="rowsLabel">Rows per page</span>
               <select
                 value={pageSize}
                 onChange={(e) => handleChangePageSize(e.target.value)}
-                style={selectStyle}
+                className="fieldControl rowsSelect"
               >
                 {PAGE_SIZE_OPTIONS.map((size) => (
                   <option key={size} value={size}>
@@ -646,421 +677,250 @@ function OrdersIndexPage() {
             </div>
           </div>
 
-          <div style={{ padding: 16 }}>
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns:
-                  mode === MODE_FROZEN
-                    ? "2fr 1fr 1fr 1fr 1fr"
-                    : "2fr 1fr 1fr 1fr",
-                gap: 12,
-              }}
+          <div className={mode === MODE_FROZEN ? "filterGrid frozen" : "filterGrid"}>
+            <Input
+              label="Search"
+              value={draftFilters.search}
+              onChange={(v) => handleDraftChange("search", v)}
+              placeholder={
+                mode === MODE_GENERAL
+                  ? "Order, enterprise, summary"
+                  : "Order, client, ratio, jurisdiction"
+              }
+            />
+
+            <Select
+              label="Status"
+              value={draftFilters.status}
+              onChange={(v) => handleDraftChange("status", v)}
+              options={ORDER_STATUS_OPTIONS}
+            />
+
+            <Input
+              label="Month"
+              type="number"
+              min="1"
+              max="12"
+              value={draftFilters.report_month}
+              onChange={(v) => handleDraftChange("report_month", v)}
+              placeholder="1-12"
+            />
+
+            <Input
+              label="Year"
+              type="number"
+              min="2000"
+              max="2100"
+              value={draftFilters.report_year}
+              onChange={(v) => handleDraftChange("report_year", v)}
+              placeholder="2026"
+            />
+
+            {mode === MODE_FROZEN ? (
+              <Input
+                label="Jurisdiction"
+                value={draftFilters.jurisdiction}
+                onChange={(v) => handleDraftChange("jurisdiction", v)}
+                placeholder="Jurisdiction"
+              />
+            ) : null}
+          </div>
+
+          <div className="filterActions">
+            <button type="submit" className="primaryButton buttonLike">
+              Apply filters
+            </button>
+
+            <button
+              type="button"
+              onClick={handleClearFilters}
+              className="secondaryButton buttonLike"
             >
-              <Input
-                label="Search"
-                value={draftFilters.search}
-                onChange={(v) => handleDraftChange("search", v)}
-                placeholder={
-                  mode === MODE_GENERAL
-                    ? "Order, enterprise, summary"
-                    : "Order, client, ratio, jurisdiction"
-                }
-              />
-
-              <Select
-                label="Status"
-                value={draftFilters.status}
-                onChange={(v) => handleDraftChange("status", v)}
-                options={ORDER_STATUS_OPTIONS}
-              />
-
-              <Input
-                label="Month"
-                type="number"
-                min="1"
-                max="12"
-                value={draftFilters.report_month}
-                onChange={(v) => handleDraftChange("report_month", v)}
-                placeholder="1-12"
-              />
-
-              <Input
-                label="Year"
-                type="number"
-                min="2000"
-                max="2100"
-                value={draftFilters.report_year}
-                onChange={(v) => handleDraftChange("report_year", v)}
-                placeholder="2026"
-              />
-
-              {mode === MODE_FROZEN ? (
-                <Input
-                  label="Jurisdiction"
-                  value={draftFilters.jurisdiction}
-                  onChange={(v) => handleDraftChange("jurisdiction", v)}
-                  placeholder="Jurisdiction"
-                />
-              ) : null}
-            </div>
-
-            <div
-              style={{
-                marginTop: 14,
-                display: "flex",
-                gap: 10,
-                flexWrap: "wrap",
-              }}
-            >
-              <button
-                type="submit"
-                style={{
-                  background: BLUE,
-                  color: "#fff",
-                  border: "none",
-                  borderRadius: 10,
-                  padding: "10px 16px",
-                  fontSize: 13,
-                  fontWeight: 700,
-                  cursor: "pointer",
-                }}
-              >
-                Apply filters
-              </button>
-
-              <button
-                type="button"
-                onClick={handleClearFilters}
-                style={{
-                  background: "#fff",
-                  color: TEXT,
-                  border: `1px solid ${BORDER}`,
-                  borderRadius: 10,
-                  padding: "10px 16px",
-                  fontSize: 13,
-                  fontWeight: 600,
-                  cursor: "pointer",
-                }}
-              >
-                Clear
-              </button>
-            </div>
+              Clear
+            </button>
           </div>
         </form>
 
-        <div
-          style={{
-            border: `1px solid ${BORDER}`,
-            borderRadius: 16,
-            background: "#fff",
-            overflow: "hidden",
-          }}
-        >
-          <div
-            style={{
-              padding: "14px 16px",
-              borderBottom: `1px solid ${BORDER}`,
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              gap: 12,
-              flexWrap: "wrap",
-            }}
-          >
+        <div className="panel">
+          <div className="panelHeader">
             <div>
-              <div
-                style={{
-                  fontSize: 15,
-                  fontWeight: 700,
-                }}
-              >
+              <div className="panelTitle">
                 {mode === MODE_GENERAL
                   ? `${titleizeSlug(generalType)} General Orders`
                   : "Frozen Container Orders"}
               </div>
-              <div
-                style={{
-                  fontSize: 12,
-                  color: MUTED,
-                  marginTop: 4,
-                }}
-              >
+              <div className="panelSubtitle">
                 {formatNumber(total)} matching records
               </div>
             </div>
 
-            <div
-              style={{
-                fontSize: 12,
-                color: MUTED,
-              }}
-            >
+            <div className="pageCounter">
               Page {formatNumber(page)} of {formatNumber(totalPages)}
             </div>
           </div>
 
           {loading ? (
-            <div style={{ padding: 22 }}>
-              <LoadingRows />
-            </div>
+            <LoadingRows />
           ) : items.length === 0 ? (
-            <div
-              style={{
-                padding: 26,
-                color: MUTED,
-                fontSize: 14,
-              }}
-            >
+            <div className="emptyState">
               No orders found for the selected view and filters.
             </div>
           ) : (
             <>
-              <div
-                style={{
-                  overflowX: "auto",
-                  width: "100%",
-                }}
-              >
-                <table
-                  style={{
-                    width: "100%",
-                    minWidth: 1600,
-                    borderCollapse: "collapse",
-                    tableLayout: "fixed",
-                  }}
-                >
-                  <thead>
-                    <tr
-                      style={{
-                        background: SOFT,
-                        borderBottom: `1px solid ${BORDER}`,
-                      }}
-                    >
-                      <HeaderCell width={170}>Order</HeaderCell>
-                      <HeaderCell width={210}>Enterprise</HeaderCell>
-                      <HeaderCell width={170}>Type / Profile</HeaderCell>
-                      <HeaderCell width={120}>Status</HeaderCell>
-                      <HeaderCell width={320}>Summary</HeaderCell>
-                      <HeaderCell width={110}>Qty (kg)</HeaderCell>
-                      <HeaderCell width={110}>Animals</HeaderCell>
-                      <HeaderCell width={130}>Shipment</HeaderCell>
-                      <HeaderCell width={130}>Paid</HeaderCell>
-                      <HeaderCell width={130}>Balance</HeaderCell>
-                      <HeaderCell width={120}>Slaughter</HeaderCell>
-                      <HeaderCell width={120}>Delivery</HeaderCell>
-                      <HeaderCell width={165}>Updated</HeaderCell>
-                      <HeaderCell width={90}>Action</HeaderCell>
-                    </tr>
-                  </thead>
+              <div className="desktopTableBlock">
+                <div className="tableWrap">
+                  <table className="ordersTable">
+                    <thead>
+                      <tr>
+                        <HeaderCell width={170}>Order</HeaderCell>
+                        <HeaderCell width={210}>Enterprise</HeaderCell>
+                        <HeaderCell width={170}>Type / Profile</HeaderCell>
+                        <HeaderCell width={120}>Status</HeaderCell>
+                        <HeaderCell width={320}>Summary</HeaderCell>
+                        <HeaderCell width={110}>Qty (kg)</HeaderCell>
+                        <HeaderCell width={110}>Animals</HeaderCell>
+                        <HeaderCell width={130}>Shipment</HeaderCell>
+                        <HeaderCell width={130}>Paid</HeaderCell>
+                        <HeaderCell width={130}>Balance</HeaderCell>
+                        <HeaderCell width={120}>Slaughter</HeaderCell>
+                        <HeaderCell width={120}>Delivery</HeaderCell>
+                        <HeaderCell width={165}>Updated</HeaderCell>
+                        <HeaderCell width={90}>Action</HeaderCell>
+                      </tr>
+                    </thead>
 
-                  <tbody>
-                    {items.map((order) => (
-                      <tr
-                        key={order.id}
-                        style={{
-                          borderBottom: `1px solid ${BORDER}`,
-                          background: "#fff",
-                        }}
-                      >
-                        <BodyCell>
-                          <div
-                            style={{
-                              fontSize: 13,
-                              fontWeight: 700,
-                              color: TEXT,
-                              lineHeight: 1.35,
-                            }}
-                          >
-                            {order.order_number || "—"}
-                          </div>
-                          <div
-                            style={{
-                              marginTop: 4,
-                              fontSize: 12,
-                              color: MUTED,
-                            }}
-                          >
-                            ID: {order.id}
-                          </div>
-                        </BodyCell>
+                    <tbody>
+                      {items.map((order) => (
+                        <tr key={order.id} className="tableRow">
+                          <BodyCell>
+                            <div className="orderNumberCell">
+                              {order.order_number || "—"}
+                            </div>
+                            <div className="mutedSmall">ID: {order.id}</div>
+                          </BodyCell>
 
-                        <BodyCell>
-                          <div
-                            style={{
-                              fontSize: 13,
-                              fontWeight: 600,
-                              lineHeight: 1.45,
-                            }}
-                          >
-                            {order.enterprise_name || "—"}
-                          </div>
-                        </BodyCell>
+                          <BodyCell>
+                            <div className="tableStrong">
+                              {order.enterprise_name || "—"}
+                            </div>
+                          </BodyCell>
 
-                        <BodyCell>
-                          <div style={{ fontSize: 13, fontWeight: 600 }}>
-                            {titleizeSlug(order.order_type)}
-                          </div>
-                          <div
-                            style={{
-                              marginTop: 4,
-                              fontSize: 12,
-                              color: MUTED,
-                            }}
-                          >
-                            {titleizeSlug(order.order_profile)}
-                          </div>
-                          {order.order_subtype ? (
-                            <div
+                          <BodyCell>
+                            <div className="tableStrong">
+                              {titleizeSlug(order.order_type)}
+                            </div>
+                            <div className="mutedSmall">
+                              {titleizeSlug(order.order_profile)}
+                            </div>
+                            {order.order_subtype ? (
+                              <div className="mutedSmall">
+                                {titleizeSlug(order.order_subtype)}
+                              </div>
+                            ) : null}
+                          </BodyCell>
+
+                          <BodyCell>
+                            <span
+                              className="statusPill"
                               style={{
-                                marginTop: 4,
-                                fontSize: 12,
-                                color: MUTED,
+                                ...statusPillStyle(order.status),
                               }}
                             >
-                              {titleizeSlug(order.order_subtype)}
+                              {titleizeSlug(order.status)}
+                            </span>
+                          </BodyCell>
+
+                          <BodyCell>
+                            <div className="summaryText">
+                              {compactSummary(order)}
                             </div>
-                          ) : null}
-                        </BodyCell>
+                          </BodyCell>
 
-                        <BodyCell>
-                          <span
-                            style={{
-                              display: "inline-flex",
-                              alignItems: "center",
-                              justifyContent: "center",
-                              padding: "6px 10px",
-                              borderRadius: 999,
-                              fontSize: 12,
-                              fontWeight: 700,
-                              textTransform: "capitalize",
-                              ...statusPillStyle(order.status),
-                            }}
-                          >
-                            {titleizeSlug(order.status)}
-                          </span>
-                        </BodyCell>
+                          <BodyCell>
+                            <div className="tableStrong">
+                              {formatNumber(order.total_quantity_kg, 2)}
+                            </div>
+                          </BodyCell>
 
-                        <BodyCell>
-                          <div
-                            style={{
-                              fontSize: 13,
-                              lineHeight: 1.5,
-                              color: TEXT,
-                              wordBreak: "break-word",
-                            }}
-                          >
-                            {compactSummary(order)}
-                          </div>
-                        </BodyCell>
+                          <BodyCell>
+                            <div className="tableStrong">
+                              {formatNumber(order.total_animals_required)}
+                            </div>
+                          </BodyCell>
 
-                        <BodyCell>
-                          <div style={{ fontSize: 13, fontWeight: 700 }}>
-                            {formatNumber(order.total_quantity_kg, 2)}
-                          </div>
-                        </BodyCell>
+                          <BodyCell>
+                            <div className="tableStrong">
+                              {formatMoney(order.shipment_value_usd)}
+                            </div>
+                          </BodyCell>
 
-                        <BodyCell>
-                          <div style={{ fontSize: 13, fontWeight: 700 }}>
-                            {formatNumber(order.total_animals_required)}
-                          </div>
-                        </BodyCell>
+                          <BodyCell>
+                            <div className="tableStrong">
+                              {formatMoney(order.amount_paid_usd)}
+                            </div>
+                          </BodyCell>
 
-                        <BodyCell>
-                          <div style={{ fontSize: 13, fontWeight: 700 }}>
-                            {formatMoney(order.shipment_value_usd)}
-                          </div>
-                        </BodyCell>
+                          <BodyCell>
+                            <div
+                              className="tableStrong"
+                              style={{
+                                color:
+                                  Number(order.balance_usd || 0) > 0
+                                    ? ORANGE
+                                    : TEXT,
+                              }}
+                            >
+                              {formatMoney(order.balance_usd)}
+                            </div>
+                          </BodyCell>
 
-                        <BodyCell>
-                          <div style={{ fontSize: 13, fontWeight: 700 }}>
-                            {formatMoney(order.amount_paid_usd)}
-                          </div>
-                        </BodyCell>
+                          <BodyCell>
+                            <div>{formatDate(order.slaughter_schedule)}</div>
+                          </BodyCell>
 
-                        <BodyCell>
-                          <div
-                            style={{
-                              fontSize: 13,
-                              fontWeight: 700,
-                              color:
-                                Number(order.balance_usd || 0) > 0 ? ORANGE : TEXT,
-                            }}
-                          >
-                            {formatMoney(order.balance_usd)}
-                          </div>
-                        </BodyCell>
+                          <BodyCell>
+                            <div>{formatDate(order.expected_delivery)}</div>
+                          </BodyCell>
 
-                        <BodyCell>
-                          <div style={{ fontSize: 13 }}>
-                            {formatDate(order.slaughter_schedule)}
-                          </div>
-                        </BodyCell>
+                          <BodyCell>
+                            <div className="mutedSmall">
+                              {formatDateTime(order.updated_at)}
+                            </div>
+                          </BodyCell>
 
-                        <BodyCell>
-                          <div style={{ fontSize: 13 }}>
-                            {formatDate(order.expected_delivery)}
-                          </div>
-                        </BodyCell>
-
-                        <BodyCell>
-                          <div style={{ fontSize: 12, color: MUTED }}>
-                            {formatDateTime(order.updated_at)}
-                          </div>
-                        </BodyCell>
-
-                        <BodyCell>
-                          <Link
-                            href={`/orders/${order.id}`}
-                            style={{
-                              color: BLUE,
-                              textDecoration: "none",
-                              fontSize: 13,
-                              fontWeight: 700,
-                            }}
-                          >
-                            View
-                          </Link>
-                        </BodyCell>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                          <BodyCell>
+                            <Link href={`/orders/${order.id}`} className="viewLink">
+                              View
+                            </Link>
+                          </BodyCell>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
 
-              <div
-                style={{
-                  padding: "14px 16px",
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  gap: 12,
-                  flexWrap: "wrap",
-                }}
-              >
-                <div
-                  style={{
-                    fontSize: 12,
-                    color: MUTED,
-                  }}
-                >
+              <div className="mobileCardsBlock">
+                <div className="mobileCardsList">
+                  {items.map((order) => (
+                    <MobileOrderCard key={order.id} order={order} />
+                  ))}
+                </div>
+              </div>
+
+              <div className="footerBar">
+                <div className="footerInfo">
                   {formatNumber(summary.totalQuantity, 2)} kg on this page •{" "}
                   {formatNumber(summary.totalAnimals)} animals •{" "}
                   {formatMoney(summary.totalShipment)} shipment
                 </div>
 
-                <div
-                  style={{
-                    display: "flex",
-                    gap: 8,
-                    alignItems: "center",
-                  }}
-                >
+                <div className="pager">
                   <button
                     type="button"
                     onClick={() => handleChangePage(page - 1)}
                     disabled={page <= 1}
-                    style={pagerButton(page <= 1)}
+                    className="pagerButton"
                   >
                     Previous
                   </button>
@@ -1069,7 +929,7 @@ function OrdersIndexPage() {
                     type="button"
                     onClick={() => handleChangePage(page + 1)}
                     disabled={page >= totalPages}
-                    style={pagerButton(page >= totalPages)}
+                    className="pagerButton"
                   >
                     Next
                   </button>
@@ -1079,252 +939,629 @@ function OrdersIndexPage() {
           )}
         </div>
       </div>
+
+      <style jsx>{baseStyles}</style>
     </div>
   );
 }
 
-function HeaderCell({ children, width }) {
-  return (
-    <th
-      style={{
-        textAlign: "left",
-        padding: "12px 14px",
-        fontSize: 12,
-        fontWeight: 700,
-        color: "#334155",
-        whiteSpace: "nowrap",
-        width,
-      }}
-    >
-      {children}
-    </th>
-  );
-}
+const baseStyles = `
+  .pageShell {
+    min-height: 100vh;
+    background: ${BG};
+    color: ${TEXT};
+    font-family: ${FONT_FAMILY};
+  }
 
-function BodyCell({ children }) {
-  return (
-    <td
-      style={{
-        padding: "14px",
-        verticalAlign: "top",
-        fontSize: 13,
-        color: TEXT,
-      }}
-    >
-      {children}
-    </td>
-  );
-}
+  .pageContainer {
+    width: 100%;
+    max-width: 1440px;
+    margin: 0 auto;
+    padding: 20px 22px 32px;
+    box-sizing: border-box;
+    overflow-x: hidden;
+  }
 
-function Input({
-  label,
-  value,
-  onChange,
-  placeholder,
-  type = "text",
-  min,
-  max,
-}) {
-  return (
-    <label style={{ display: "block", minWidth: 0 }}>
-      <div
-        style={{
-          fontSize: 12,
-          fontWeight: 700,
-          color: "#334155",
-          marginBottom: 6,
-        }}
-      >
-        {label}
-      </div>
-      <input
-        type={type}
-        value={value}
-        min={min}
-        max={max}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        style={inputStyle}
-      />
-    </label>
-  );
-}
+  .errorBanner {
+    color: ${RED};
+    background: ${RED_SOFT};
+    border: 1px solid rgba(220, 38, 38, 0.18);
+    border-radius: 14px;
+    padding: 12px 14px;
+    margin-bottom: 16px;
+    font-size: 13px;
+    line-height: 1.55;
+  }
 
-function Select({ label, value, onChange, options }) {
-  return (
-    <label style={{ display: "block", minWidth: 0 }}>
-      <div
-        style={{
-          fontSize: 12,
-          fontWeight: 700,
-          color: "#334155",
-          marginBottom: 6,
-        }}
-      >
-        {label}
-      </div>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        style={selectStyle}
-      >
-        {options.map((option) => (
-          <option key={`${label}-${option.value}`} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
+  .headerRow {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+  }
 
-function SummaryCard({ label, value, hint }) {
-  return (
-    <div
-      style={{
-        border: `1px solid ${BORDER}`,
-        borderRadius: 14,
-        background: "#fff",
-        padding: "14px 16px",
-      }}
-    >
-      <div
-        style={{
-          fontSize: 12,
-          color: MUTED,
-          marginBottom: 7,
-        }}
-      >
-        {label}
-      </div>
-      <div
-        style={{
-          fontSize: 20,
-          fontWeight: 700,
-          lineHeight: 1.2,
-          letterSpacing: "-0.02em",
-          color: TEXT,
-        }}
-      >
-        {value}
-      </div>
-      <div
-        style={{
-          marginTop: 4,
-          fontSize: 12,
-          color: MUTED,
-        }}
-      >
-        {hint}
-      </div>
-    </div>
-  );
-}
+  .headerText {
+    min-width: 0;
+    flex: 1 1 320px;
+  }
 
-function ModeButton({ active, onClick, children }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      style={{
-        border: active ? `1px solid ${BLUE}` : `1px solid ${BORDER}`,
-        background: active ? BLUE_SOFT : "#fff",
-        color: active ? BLUE : TEXT,
-        borderRadius: 10,
-        padding: "10px 16px",
-        fontSize: 13,
-        fontWeight: 700,
-        cursor: "pointer",
-      }}
-    >
-      {children}
-    </button>
-  );
-}
+  .pageTitle {
+    margin: 0;
+    font-size: 28px;
+    line-height: 1.2;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: ${TEXT};
+  }
 
-function SubTypeButton({ active, onClick, children }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      style={{
-        border: active ? `1px solid ${ORANGE}` : `1px solid ${BORDER}`,
-        background: active ? ORANGE_SOFT : "#fff",
-        color: active ? ORANGE : TEXT,
-        borderRadius: 10,
-        padding: "9px 14px",
-        fontSize: 13,
-        fontWeight: 700,
-        cursor: "pointer",
-      }}
-    >
-      {children}
-    </button>
-  );
-}
+  .pageSubtitle {
+    margin: 6px 0 0;
+    color: ${MUTED};
+    font-size: 13px;
+    line-height: 1.55;
+  }
 
-function LoadingRows() {
-  return (
-    <div
-      style={{
-        display: "grid",
-        gap: 10,
-      }}
-    >
-      {Array.from({ length: 8 }).map((_, index) => (
-        <div
-          key={index}
-          style={{
-            height: 52,
-            borderRadius: 12,
-            background: "#f8fafc",
-            border: `1px solid ${BORDER}`,
-          }}
-        />
-      ))}
-    </div>
-  );
-}
+  .headerActions {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
 
-function pagerButton(disabled) {
-  return {
-    border: `1px solid ${BORDER}`,
-    background: disabled ? "#f8fafc" : "#fff",
-    color: disabled ? "#94a3b8" : TEXT,
-    borderRadius: 10,
-    padding: "9px 14px",
-    fontSize: 13,
-    fontWeight: 600,
-    cursor: disabled ? "not-allowed" : "pointer",
-  };
-}
+  .primaryButton,
+  .secondaryButton,
+  .tabButton,
+  .subTabButton,
+  .pagerButton,
+  .fieldControl {
+    font-family: ${FONT_FAMILY};
+  }
 
-const inputStyle = {
-  width: "100%",
-  height: 42,
-  padding: "0 12px",
-  borderRadius: 10,
-  border: `1px solid ${BORDER}`,
-  background: "#fff",
-  color: TEXT,
-  fontSize: 13,
-  fontFamily: FONT_FAMILY,
-  outline: "none",
-  boxSizing: "border-box",
-};
+  .primaryButton,
+  .secondaryButton,
+  .tabButton,
+  .subTabButton,
+  .pagerButton,
+  .buttonLike {
+    min-height: 42px;
+  }
 
-const selectStyle = {
-  width: "100%",
-  height: 42,
-  padding: "0 12px",
-  borderRadius: 10,
-  border: `1px solid ${BORDER}`,
-  background: "#fff",
-  color: TEXT,
-  fontSize: 13,
-  fontFamily: FONT_FAMILY,
-  outline: "none",
-  boxSizing: "border-box",
-};
+  .primaryButton {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    text-decoration: none;
+    border: none;
+    background: ${BLUE};
+    color: #ffffff;
+    border-radius: 12px;
+    padding: 10px 16px;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    box-sizing: border-box;
+  }
 
-export default OrdersIndexPage;
+  .secondaryButton {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid ${BORDER};
+    background: #ffffff;
+    color: ${TEXT};
+    border-radius: 12px;
+    padding: 10px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    box-sizing: border-box;
+  }
+
+  .secondaryButton:disabled,
+  .pagerButton:disabled {
+    cursor: not-allowed;
+    color: #94a3b8;
+    background: ${SOFT};
+  }
+
+  .tabRow,
+  .subTabRow {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+  }
+
+  .tabButton {
+    border: 1px solid ${BORDER};
+    background: #ffffff;
+    color: ${TEXT};
+    border-radius: 12px;
+    padding: 10px 16px;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .tabButtonActive {
+    border-color: ${BLUE};
+    background: ${BLUE_SOFT};
+    color: ${BLUE};
+  }
+
+  .subTabButton {
+    border: 1px solid ${BORDER};
+    background: #ffffff;
+    color: ${TEXT};
+    border-radius: 12px;
+    padding: 9px 14px;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .subTabButtonActive {
+    border-color: ${ORANGE};
+    background: ${ORANGE_SOFT};
+    color: ${ORANGE};
+  }
+
+  .summaryGrid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+
+  .summaryCard {
+    border: 1px solid ${BORDER};
+    border-radius: 16px;
+    background: ${SURFACE};
+    padding: 14px 16px;
+    box-shadow: ${SHADOW};
+    min-width: 0;
+  }
+
+  .summaryLabel {
+    font-size: 12px;
+    color: ${MUTED};
+    margin-bottom: 7px;
+  }
+
+  .summaryValue {
+    font-size: 22px;
+    line-height: 1.15;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: ${TEXT};
+    word-break: break-word;
+  }
+
+  .summaryHint {
+    margin-top: 4px;
+    font-size: 12px;
+    color: ${MUTED};
+  }
+
+  .panel {
+    border: 1px solid ${BORDER};
+    border-radius: 18px;
+    background: ${SURFACE};
+    padding: 16px;
+    margin-bottom: 16px;
+    box-shadow: ${SHADOW};
+    overflow: hidden;
+  }
+
+  .panelHeader {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 14px;
+    flex-wrap: wrap;
+    margin-bottom: 14px;
+  }
+
+  .panelTitle {
+    font-size: 15px;
+    font-weight: 700;
+    color: ${TEXT};
+  }
+
+  .panelSubtitle {
+    font-size: 12px;
+    color: ${MUTED};
+    margin-top: 4px;
+  }
+
+  .rowsControl {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .rowsLabel {
+    font-size: 12px;
+    color: ${MUTED};
+  }
+
+  .rowsSelect {
+    width: 96px;
+  }
+
+  .filterGrid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .filterGrid.frozen {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+
+  .field {
+    display: block;
+    min-width: 0;
+  }
+
+  .fieldLabel {
+    display: block;
+    font-size: 12px;
+    font-weight: 700;
+    color: #334155;
+    margin-bottom: 6px;
+  }
+
+  .fieldControl {
+    width: 100%;
+    height: 42px;
+    border: 1px solid ${BORDER};
+    border-radius: 12px;
+    background: #ffffff;
+    color: ${TEXT};
+    padding: 0 12px;
+    font-size: 13px;
+    outline: none;
+    box-sizing: border-box;
+  }
+
+  .filterActions {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-top: 14px;
+  }
+
+  .pageCounter {
+    font-size: 12px;
+    color: ${MUTED};
+  }
+
+  .emptyState {
+    padding: 22px 6px 6px;
+    color: ${MUTED};
+    font-size: 14px;
+  }
+
+  .desktopTableBlock {
+    display: block;
+  }
+
+  .mobileCardsBlock {
+    display: none;
+  }
+
+  .tableWrap {
+    width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    border-radius: 14px;
+  }
+
+  .ordersTable {
+    width: 100%;
+    min-width: 1540px;
+    border-collapse: collapse;
+    table-layout: fixed;
+  }
+
+  .tableHeaderCell {
+    text-align: left;
+    padding: 12px 14px;
+    font-size: 12px;
+    font-weight: 700;
+    color: #334155;
+    white-space: nowrap;
+    background: ${SOFT};
+    border-bottom: 1px solid ${BORDER};
+  }
+
+  .tableBodyCell {
+    padding: 14px;
+    vertical-align: top;
+    font-size: 13px;
+    color: ${TEXT};
+    border-bottom: 1px solid ${BORDER};
+  }
+
+  .tableRow:last-child .tableBodyCell {
+    border-bottom: 1px solid ${BORDER};
+  }
+
+  .orderNumberCell,
+  .tableStrong {
+    font-size: 13px;
+    font-weight: 700;
+    color: ${TEXT};
+    line-height: 1.45;
+    word-break: break-word;
+  }
+
+  .mutedSmall {
+    margin-top: 4px;
+    font-size: 12px;
+    color: ${MUTED};
+    line-height: 1.45;
+    word-break: break-word;
+  }
+
+  .summaryText {
+    font-size: 13px;
+    line-height: 1.55;
+    color: ${TEXT};
+    word-break: break-word;
+  }
+
+  .statusPill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    padding: 6px 10px;
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: capitalize;
+    white-space: nowrap;
+  }
+
+  .viewLink {
+    color: ${BLUE};
+    text-decoration: none;
+    font-size: 13px;
+    font-weight: 700;
+  }
+
+  .mobileCardsList {
+    display: grid;
+    gap: 12px;
+  }
+
+  .mobileOrderCard {
+    border: 1px solid ${BORDER};
+    border-radius: 16px;
+    background: #ffffff;
+    padding: 14px;
+  }
+
+  .mobileCardTop {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .mobileCardIdentity {
+    min-width: 0;
+    flex: 1 1 220px;
+  }
+
+  .mobileOrderNumber {
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1.35;
+    color: ${TEXT};
+    word-break: break-word;
+  }
+
+  .mobileOrderId {
+    margin-top: 3px;
+    font-size: 12px;
+    color: ${MUTED};
+    word-break: break-word;
+  }
+
+  .mobileEnterprise {
+    margin-top: 6px;
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1.45;
+    color: ${TEXT};
+    word-break: break-word;
+  }
+
+  .mobileMetaGrid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    margin-top: 14px;
+  }
+
+  .mobileMetaItem {
+    min-width: 0;
+  }
+
+  .mobileMetaItemFull {
+    grid-column: 1 / -1;
+  }
+
+  .mobileMetaLabel {
+    font-size: 11px;
+    font-weight: 700;
+    color: ${MUTED};
+    margin-bottom: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+  }
+
+  .mobileMetaValue {
+    font-size: 13px;
+    line-height: 1.5;
+    color: ${TEXT};
+    font-weight: 600;
+    word-break: break-word;
+  }
+
+  .mobileCardFooter {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid ${BORDER};
+    display: flex;
+    justify-content: flex-start;
+    align-items: center;
+  }
+
+  .footerBar {
+    padding-top: 16px;
+    margin-top: 16px;
+    border-top: 1px solid ${BORDER};
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .footerInfo {
+    font-size: 12px;
+    color: ${MUTED};
+    line-height: 1.5;
+  }
+
+  .pager {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .pagerButton {
+    border: 1px solid ${BORDER};
+    background: #ffffff;
+    color: ${TEXT};
+    border-radius: 12px;
+    padding: 9px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .loadingRows {
+    display: grid;
+    gap: 10px;
+  }
+
+  .loadingRow {
+    height: 52px;
+    border-radius: 12px;
+    background: ${SOFT};
+    border: 1px solid ${BORDER};
+  }
+
+  @media (max-width: 1200px) {
+    .summaryGrid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .filterGrid,
+    .filterGrid.frozen {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @media (max-width: 1024px) {
+    .desktopTableBlock {
+      display: none;
+    }
+
+    .mobileCardsBlock {
+      display: block;
+    }
+  }
+
+  @media (max-width: 640px) {
+    .pageContainer {
+      padding: 14px 12px 24px;
+    }
+
+    .pageTitle {
+      font-size: 24px;
+    }
+
+    .headerActions {
+      width: 100%;
+    }
+
+    .headerActions :global(a),
+    .headerActions button,
+    .filterActions button {
+      flex: 1 1 100%;
+    }
+
+    .tabRow,
+    .subTabRow {
+      gap: 8px;
+    }
+
+    .tabButton,
+    .subTabButton {
+      flex: 1 1 calc(50% - 8px);
+      justify-content: center;
+    }
+
+    .summaryGrid {
+      grid-template-columns: 1fr;
+    }
+
+    .panel {
+      padding: 14px;
+      border-radius: 16px;
+    }
+
+    .filterGrid,
+    .filterGrid.frozen {
+      grid-template-columns: 1fr;
+    }
+
+    .rowsControl {
+      width: 100%;
+      justify-content: space-between;
+    }
+
+    .mobileMetaGrid {
+      grid-template-columns: 1fr;
+      gap: 10px;
+    }
+
+    .mobileMetaItemFull {
+      grid-column: auto;
+    }
+
+    .footerBar {
+      align-items: stretch;
+    }
+
+    .pager {
+      width: 100%;
+    }
+
+    .pagerButton {
+      flex: 1 1 0;
+      justify-content: center;
+    }
+  }
+`;

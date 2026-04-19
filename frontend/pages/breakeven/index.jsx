@@ -18,7 +18,6 @@ const ORANGE = "#f97316";
 const ORANGE_SOFT = "rgba(249,115,22,0.10)";
 const GREEN_SOFT = "rgba(21,128,61,0.10)";
 const RED_SOFT = "rgba(185,28,28,0.08)";
-const BLUE_SOFT = "rgba(37,99,235,0.08)";
 
 const SCOPE_TYPE_OPTIONS = [
   { label: "Global", value: "global" },
@@ -76,6 +75,16 @@ function normalizeFormNumber(value) {
   return Number.isNaN(num) ? undefined : num;
 }
 
+function getScopeLabel(setting) {
+  if (!setting) return "-";
+  if (setting.scope_type === "monthly") {
+    return `Monthly${
+      setting.month && setting.year ? ` (${setting.month}/${setting.year})` : ""
+    }`;
+  }
+  return "Global";
+}
+
 function SectionTitle({ title, subtitle }) {
   return (
     <div style={{ marginBottom: 14 }}>
@@ -106,15 +115,7 @@ function SectionTitle({ title, subtitle }) {
 
 function SummaryCard({ label, value, sub, accent = BLUE }) {
   return (
-    <div
-      style={{
-        border: `1px solid ${BORDER}`,
-        borderRadius: 14,
-        background: CARD_BG,
-        padding: 14,
-        minHeight: 88,
-      }}
-    >
+    <div className="be-summary-card">
       <div
         style={{
           width: 38,
@@ -139,6 +140,7 @@ function SummaryCard({ label, value, sub, accent = BLUE }) {
           lineHeight: 1.1,
           fontWeight: 700,
           color: TEXT,
+          wordBreak: "break-word",
         }}
       >
         {value}
@@ -187,6 +189,7 @@ function Toggle({ checked, onChange, label }) {
         color: TEXT,
         cursor: "pointer",
         userSelect: "none",
+        flexWrap: "wrap",
       }}
     >
       <input
@@ -205,16 +208,11 @@ function TabButton({ active, onClick, children }) {
     <button
       type="button"
       onClick={onClick}
+      className="be-tab-button"
       style={{
         border: `1px solid ${active ? "rgba(249,115,22,0.24)" : BORDER}`,
         background: active ? ORANGE_SOFT : PAGE_BG,
         color: active ? ORANGE : TEXT,
-        height: 40,
-        padding: "0 16px",
-        borderRadius: 10,
-        cursor: "pointer",
-        fontSize: 13,
-        fontWeight: 700,
       }}
     >
       {children}
@@ -245,6 +243,15 @@ function SettingBadge({ setting }) {
   );
 }
 
+function InfoRow({ label, value }) {
+  return (
+    <div style={settingInfoRowStyle}>
+      <span style={settingInfoLabelStyle}>{label}</span>
+      <span style={settingInfoValueStyle}>{value}</span>
+    </div>
+  );
+}
+
 function MetricRowTable({ rows }) {
   if (!rows?.length) {
     return <EmptyBlock text="No breakeven rows available for the selected setup." />;
@@ -272,30 +279,13 @@ function MetricRowTable({ rows }) {
         Breakeven Summary Table
       </div>
 
-      <div style={{ overflowX: "auto" }}>
-        <table
-          style={{
-            width: "100%",
-            minWidth: 760,
-            borderCollapse: "collapse",
-            fontSize: 13,
-          }}
-        >
+      <div className="be-desktop-table-wrap">
+        <table className="be-desktop-table">
           <thead>
             <tr>
               {["Index", "Metric", "Quantity (Tonnes)", "USD (Total)", "Percentage"].map(
                 (head) => (
-                  <th
-                    key={head}
-                    style={{
-                      textAlign: "left",
-                      padding: "12px",
-                      borderBottom: `1px solid ${BORDER}`,
-                      color: TEXT,
-                      fontWeight: 700,
-                      whiteSpace: "nowrap",
-                    }}
-                  >
+                  <th key={head} style={tableHeadStyle}>
                     {head}
                   </th>
                 )
@@ -329,6 +319,257 @@ function MetricRowTable({ rows }) {
             ))}
           </tbody>
         </table>
+      </div>
+
+      <div className="be-mobile-card-list">
+        {rows.map((row) => (
+          <div key={`mobile-${row.index}-${row.metric}`} className="be-mobile-table-card">
+            <div className="be-mobile-card-top">
+              <div className="be-mobile-card-title">{row.metric}</div>
+              <div className="be-mobile-card-index">#{row.index}</div>
+            </div>
+
+            <div className="be-mobile-kv">
+              <span>Quantity</span>
+              <strong>
+                {row.quantity_display ||
+                  (row.quantity_tonnes !== null && row.quantity_tonnes !== undefined
+                    ? formatDecimal(row.quantity_tonnes)
+                    : "-")}
+              </strong>
+            </div>
+
+            <div className="be-mobile-kv">
+              <span>USD Total</span>
+              <strong>
+                {row.usd_display ||
+                  (row.usd_total !== null && row.usd_total !== undefined
+                    ? formatMoney(row.usd_total)
+                    : "-")}
+              </strong>
+            </div>
+
+            <div className="be-mobile-kv">
+              <span>Percentage</span>
+              <strong>
+                {row.percentage_display ||
+                  (row.percentage !== null && row.percentage !== undefined
+                    ? formatPercent(row.percentage)
+                    : "-")}
+              </strong>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SettingsTable({
+  settings,
+  isLoadingSettings,
+  isTogglingSettingId,
+  startEditSetting,
+  toggleSettingActive,
+}) {
+  return (
+    <div
+      style={{
+        border: `1px solid ${BORDER}`,
+        borderRadius: 14,
+        overflow: "hidden",
+        background: PAGE_BG,
+      }}
+    >
+      <div
+        style={{
+          padding: "12px 14px",
+          borderBottom: `1px solid ${BORDER}`,
+          background: SOFT,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 12,
+          flexWrap: "wrap",
+        }}
+      >
+        <div style={{ fontSize: 14, fontWeight: 700, color: TEXT }}>Settings List</div>
+
+        <div style={{ fontSize: 12, color: MUTED }}>
+          {isLoadingSettings ? "Loading settings..." : `${settings.length} setting(s)`}
+        </div>
+      </div>
+
+      <div className="be-desktop-table-wrap">
+        <table className="be-desktop-table">
+          <thead>
+            <tr>
+              {[
+                "Name",
+                "Scope",
+                "Month / Year",
+                "Break Even Tonnes",
+                "USD / Tonne",
+                "Break Even Value",
+                "Status",
+                "Actions",
+              ].map((head) => (
+                <th key={head} style={tableHeadStyle}>
+                  {head}
+                </th>
+              ))}
+            </tr>
+          </thead>
+
+          <tbody>
+            {settings.length ? (
+              settings.map((item) => {
+                const isBusy = isTogglingSettingId === item.id;
+
+                return (
+                  <tr key={item.id}>
+                    <td style={{ ...tableCellStyle, fontWeight: 600 }}>
+                      {item.setting_name || "-"}
+                    </td>
+                    <td style={tableCellStyle}>
+                      {item.scope_type === "monthly" ? "Monthly" : "Global"}
+                    </td>
+                    <td style={tableCellStyle}>
+                      {item.scope_type === "monthly"
+                        ? `${item.month || "-"} / ${item.year || "-"}`
+                        : "-"}
+                    </td>
+                    <td style={tableCellStyle}>
+                      {formatDecimal(item.break_even_quantity_tonnes)}
+                    </td>
+                    <td style={tableCellStyle}>
+                      {formatDecimal(item.break_even_usd_per_tonne, 4)}
+                    </td>
+                    <td style={tableCellStyle}>{formatMoney(item.break_even_value_usd)}</td>
+                    <td style={tableCellStyle}>
+                      <SettingBadge setting={item} />
+                    </td>
+                    <td style={tableCellStyle}>
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        <button
+                          type="button"
+                          onClick={() => startEditSetting(item)}
+                          style={miniButtonStyle(BLUE)}
+                        >
+                          Edit
+                        </button>
+
+                        {item.is_active ? (
+                          <button
+                            type="button"
+                            disabled={isBusy}
+                            onClick={() => toggleSettingActive(item, false)}
+                            style={miniButtonStyle(RED)}
+                          >
+                            {isBusy ? "Working..." : "Deactivate"}
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={isBusy}
+                            onClick={() => toggleSettingActive(item, true)}
+                            style={miniButtonStyle(GREEN)}
+                          >
+                            {isBusy ? "Working..." : "Activate"}
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })
+            ) : (
+              <tr>
+                <td
+                  colSpan={8}
+                  style={{
+                    padding: 20,
+                    textAlign: "center",
+                    color: MUTED,
+                  }}
+                >
+                  No breakeven settings available.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="be-mobile-card-list">
+        {settings.length ? (
+          settings.map((item) => {
+            const isBusy = isTogglingSettingId === item.id;
+
+            return (
+              <div key={`mobile-${item.id}`} className="be-mobile-table-card">
+                <div className="be-mobile-card-top">
+                  <div className="be-mobile-card-title">{item.setting_name || "-"}</div>
+                  <SettingBadge setting={item} />
+                </div>
+
+                <div className="be-mobile-kv">
+                  <span>Scope</span>
+                  <strong>{getScopeLabel(item)}</strong>
+                </div>
+
+                <div className="be-mobile-kv">
+                  <span>Break Even Tonnes</span>
+                  <strong>{formatDecimal(item.break_even_quantity_tonnes)}</strong>
+                </div>
+
+                <div className="be-mobile-kv">
+                  <span>USD per Tonne</span>
+                  <strong>{formatDecimal(item.break_even_usd_per_tonne, 4)}</strong>
+                </div>
+
+                <div className="be-mobile-kv">
+                  <span>Break Even Value</span>
+                  <strong>{formatMoney(item.break_even_value_usd)}</strong>
+                </div>
+
+                <div className="be-mobile-actions">
+                  <button
+                    type="button"
+                    onClick={() => startEditSetting(item)}
+                    style={miniButtonStyle(BLUE)}
+                  >
+                    Edit
+                  </button>
+
+                  {item.is_active ? (
+                    <button
+                      type="button"
+                      disabled={isBusy}
+                      onClick={() => toggleSettingActive(item, false)}
+                      style={miniButtonStyle(RED)}
+                    >
+                      {isBusy ? "Working..." : "Deactivate"}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={isBusy}
+                      onClick={() => toggleSettingActive(item, true)}
+                      style={miniButtonStyle(GREEN)}
+                    >
+                      {isBusy ? "Working..." : "Activate"}
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })
+        ) : (
+          <div style={{ padding: 16, color: MUTED, fontSize: 13 }}>
+            No breakeven settings available.
+          </div>
+        )}
       </div>
     </div>
   );
@@ -579,10 +820,7 @@ export default function BreakevenIndexPage() {
     <>
       <Head>
         <title>Breakeven | UMG</title>
-        <meta
-          name="viewport"
-          content="width=device-width, initial-scale=1, maximum-scale=1"
-        />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
       </Head>
 
       <div
@@ -593,32 +831,16 @@ export default function BreakevenIndexPage() {
           fontFamily: "Arial, sans-serif",
         }}
       >
-        <div
-          style={{
-            width: "100%",
-            maxWidth: 1500,
-            margin: "0 auto",
-            padding: "20px 20px 40px",
-            boxSizing: "border-box",
-          }}
-        >
-          <div
-            style={{
-              display: "flex",
-              alignItems: "flex-start",
-              justifyContent: "space-between",
-              gap: 20,
-              flexWrap: "wrap",
-              marginBottom: 18,
-            }}
-          >
-            <div>
+        <div className="be-shell">
+          <div className="be-topbar">
+            <div className="be-title-block">
               <div
                 style={{
                   fontSize: 24,
                   fontWeight: 700,
                   color: TEXT,
                   marginBottom: 6,
+                  wordBreak: "break-word",
                 }}
               >
                 Breakeven
@@ -637,7 +859,7 @@ export default function BreakevenIndexPage() {
             </div>
 
             {activeTab === "summary" ? (
-              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <div className="be-actions">
                 <button
                   type="button"
                   onClick={loadSummary}
@@ -684,7 +906,7 @@ export default function BreakevenIndexPage() {
                 </button>
               </div>
             ) : (
-              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <div className="be-actions">
                 <button
                   type="button"
                   onClick={loadSettings}
@@ -720,16 +942,8 @@ export default function BreakevenIndexPage() {
             )}
           </div>
 
-          <div
-            style={{
-              border: `1px solid ${BORDER}`,
-              borderRadius: 16,
-              background: PAGE_BG,
-              padding: 16,
-              marginBottom: 18,
-            }}
-          >
-            <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+          <div className="be-panel">
+            <div className="be-tabs">
               <TabButton
                 active={activeTab === "summary"}
                 onClick={() => setActiveTab("summary")}
@@ -748,28 +962,13 @@ export default function BreakevenIndexPage() {
 
           {activeTab === "summary" ? (
             <>
-              <div
-                style={{
-                  border: `1px solid ${BORDER}`,
-                  borderRadius: 16,
-                  background: PAGE_BG,
-                  padding: 16,
-                  marginBottom: 18,
-                }}
-              >
+              <div className="be-panel">
                 <SectionTitle
                   title="Breakeven Summary Controls"
                   subtitle="Only breakeven-related options are shown here."
                 />
 
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-                    gap: 12,
-                    marginBottom: 14,
-                  }}
-                >
+                <div className="be-form-grid be-form-grid-summary">
                   <div>
                     <label style={fieldLabelStyle}>Report Date</label>
                     <input
@@ -835,7 +1034,7 @@ export default function BreakevenIndexPage() {
                   </div>
                 </div>
 
-                <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+                <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginTop: 14 }}>
                   <Toggle
                     checked={includeRows}
                     onChange={setIncludeRows}
@@ -860,14 +1059,7 @@ export default function BreakevenIndexPage() {
                 </div>
               ) : null}
 
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-                  gap: 12,
-                  marginBottom: 18,
-                }}
-              >
+              <div className="be-summary-grid">
                 <SummaryCard
                   label="Break Even Quantity"
                   value={`${formatDecimal(totals.break_even_quantity_tonnes)} tonnes`}
@@ -910,15 +1102,7 @@ export default function BreakevenIndexPage() {
                 />
               </div>
 
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "minmax(0, 1.35fr) minmax(300px, 0.8fr)",
-                  gap: 18,
-                  alignItems: "start",
-                  marginBottom: 18,
-                }}
-              >
+              <div className="be-two-column-grid">
                 <MetricRowTable rows={reportData?.rows || []} />
 
                 <div
@@ -935,61 +1119,26 @@ export default function BreakevenIndexPage() {
                   />
 
                   {selectedSetting ? (
-                    <div style={{ display: "grid", gap: 10 }}>
-                      <div style={settingInfoRowStyle}>
-                        <span style={settingInfoLabelStyle}>Name</span>
-                        <span style={settingInfoValueStyle}>
-                          {selectedSetting.setting_name || "-"}
-                        </span>
-                      </div>
-
-                      <div style={settingInfoRowStyle}>
-                        <span style={settingInfoLabelStyle}>Scope</span>
-                        <span style={settingInfoValueStyle}>
-                          {selectedSetting.scope_type === "monthly"
-                            ? `Monthly${
-                                selectedSetting.month && selectedSetting.year
-                                  ? ` (${selectedSetting.month}/${selectedSetting.year})`
-                                  : ""
-                              }`
-                            : "Global"}
-                        </span>
-                      </div>
-
-                      <div style={settingInfoRowStyle}>
-                        <span style={settingInfoLabelStyle}>Status</span>
-                        <span style={settingInfoValueStyle}>
-                          <SettingBadge setting={selectedSetting} />
-                        </span>
-                      </div>
-
-                      <div style={settingInfoRowStyle}>
-                        <span style={settingInfoLabelStyle}>Break Even Tonnes</span>
-                        <span style={settingInfoValueStyle}>
-                          {formatDecimal(selectedSetting.break_even_quantity_tonnes)}
-                        </span>
-                      </div>
-
-                      <div style={settingInfoRowStyle}>
-                        <span style={settingInfoLabelStyle}>USD per Tonne</span>
-                        <span style={settingInfoValueStyle}>
-                          {formatDecimal(selectedSetting.break_even_usd_per_tonne, 4)}
-                        </span>
-                      </div>
-
-                      <div style={settingInfoRowStyle}>
-                        <span style={settingInfoLabelStyle}>Break Even Value</span>
-                        <span style={settingInfoValueStyle}>
-                          {formatMoney(selectedSetting.break_even_value_usd)}
-                        </span>
-                      </div>
-
-                      <div style={settingInfoRowStyle}>
-                        <span style={settingInfoLabelStyle}>Report Date</span>
-                        <span style={settingInfoValueStyle}>
-                          {formatDate(reportData?.report_date)}
-                        </span>
-                      </div>
+                    <div style={{ display: "grid", gap: 0 }}>
+                      <InfoRow label="Name" value={selectedSetting.setting_name || "-"} />
+                      <InfoRow label="Scope" value={getScopeLabel(selectedSetting)} />
+                      <InfoRow
+                        label="Status"
+                        value={<SettingBadge setting={selectedSetting} />}
+                      />
+                      <InfoRow
+                        label="Break Even Tonnes"
+                        value={formatDecimal(selectedSetting.break_even_quantity_tonnes)}
+                      />
+                      <InfoRow
+                        label="USD per Tonne"
+                        value={formatDecimal(selectedSetting.break_even_usd_per_tonne, 4)}
+                      />
+                      <InfoRow
+                        label="Break Even Value"
+                        value={formatMoney(selectedSetting.break_even_value_usd)}
+                      />
+                      <InfoRow label="Report Date" value={formatDate(reportData?.report_date)} />
                     </div>
                   ) : (
                     <EmptyBlock text="No resolved setting details available." />
@@ -1006,6 +1155,7 @@ export default function BreakevenIndexPage() {
                 }}
               >
                 <div
+                  className="be-preview-head"
                   style={{
                     padding: "14px 16px",
                     borderBottom: `1px solid ${BORDER}`,
@@ -1017,9 +1167,7 @@ export default function BreakevenIndexPage() {
                   }}
                 >
                   <div>
-                    <div style={{ fontSize: 14, fontWeight: 700, color: TEXT }}>
-                      PDF Preview
-                    </div>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: TEXT }}>PDF Preview</div>
                     <div style={{ fontSize: 12, color: MUTED, marginTop: 4 }}>
                       Generate and inspect the breakeven PDF here.
                     </div>
@@ -1035,12 +1183,7 @@ export default function BreakevenIndexPage() {
                   </button>
                 </div>
 
-                <div
-                  style={{
-                    height: 760,
-                    background: SOFT_2,
-                  }}
-                >
+                <div className="be-preview-body">
                   {pdfPreviewUrl ? (
                     <iframe
                       title="Breakeven PDF Preview"
@@ -1073,28 +1216,13 @@ export default function BreakevenIndexPage() {
             </>
           ) : (
             <>
-              <div
-                style={{
-                  border: `1px solid ${BORDER}`,
-                  borderRadius: 16,
-                  background: PAGE_BG,
-                  padding: 16,
-                  marginBottom: 18,
-                }}
-              >
+              <div className="be-panel">
                 <SectionTitle
                   title={editingSettingId ? "Edit Breakeven Setting" : "Create Breakeven Setting"}
                   subtitle="Manage monthly and global breakeven settings only."
                 />
 
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-                    gap: 12,
-                    marginBottom: 14,
-                  }}
-                >
+                <div className="be-form-grid be-form-grid-settings">
                   <div>
                     <label style={fieldLabelStyle}>Setting Name</label>
                     <input
@@ -1187,13 +1315,7 @@ export default function BreakevenIndexPage() {
                   </div>
                 </div>
 
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
-                    gap: 12,
-                  }}
-                >
+                <div className="be-textarea-grid">
                   <div>
                     <label style={fieldLabelStyle}>Description</label>
                     <textarea
@@ -1232,163 +1354,14 @@ export default function BreakevenIndexPage() {
                 </div>
               ) : null}
 
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "minmax(0, 1.2fr) minmax(280px, 0.8fr)",
-                  gap: 18,
-                  alignItems: "start",
-                }}
-              >
-                <div
-                  style={{
-                    border: `1px solid ${BORDER}`,
-                    borderRadius: 14,
-                    overflow: "hidden",
-                    background: PAGE_BG,
-                  }}
-                >
-                  <div
-                    style={{
-                      padding: "12px 14px",
-                      borderBottom: `1px solid ${BORDER}`,
-                      background: SOFT,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                      gap: 12,
-                      flexWrap: "wrap",
-                    }}
-                  >
-                    <div style={{ fontSize: 14, fontWeight: 700, color: TEXT }}>
-                      Settings List
-                    </div>
-
-                    <div style={{ fontSize: 12, color: MUTED }}>
-                      {isLoadingSettings ? "Loading settings..." : `${settings.length} setting(s)`}
-                    </div>
-                  </div>
-
-                  <div style={{ overflowX: "auto" }}>
-                    <table
-                      style={{
-                        width: "100%",
-                        minWidth: 960,
-                        borderCollapse: "collapse",
-                        fontSize: 13,
-                      }}
-                    >
-                      <thead>
-                        <tr>
-                          {[
-                            "Name",
-                            "Scope",
-                            "Month / Year",
-                            "Break Even Tonnes",
-                            "USD / Tonne",
-                            "Break Even Value",
-                            "Status",
-                            "Actions",
-                          ].map((head) => (
-                            <th
-                              key={head}
-                              style={{
-                                textAlign: "left",
-                                padding: "12px",
-                                borderBottom: `1px solid ${BORDER}`,
-                                color: TEXT,
-                                fontWeight: 700,
-                                whiteSpace: "nowrap",
-                              }}
-                            >
-                              {head}
-                            </th>
-                          ))}
-                        </tr>
-                      </thead>
-
-                      <tbody>
-                        {settings.length ? (
-                          settings.map((item) => {
-                            const isBusy = isTogglingSettingId === item.id;
-
-                            return (
-                              <tr key={item.id}>
-                                <td style={{ ...tableCellStyle, fontWeight: 600 }}>
-                                  {item.setting_name || "-"}
-                                </td>
-                                <td style={tableCellStyle}>
-                                  {item.scope_type === "monthly" ? "Monthly" : "Global"}
-                                </td>
-                                <td style={tableCellStyle}>
-                                  {item.scope_type === "monthly"
-                                    ? `${item.month || "-"} / ${item.year || "-"}`
-                                    : "-"}
-                                </td>
-                                <td style={tableCellStyle}>
-                                  {formatDecimal(item.break_even_quantity_tonnes)}
-                                </td>
-                                <td style={tableCellStyle}>
-                                  {formatDecimal(item.break_even_usd_per_tonne, 4)}
-                                </td>
-                                <td style={tableCellStyle}>
-                                  {formatMoney(item.break_even_value_usd)}
-                                </td>
-                                <td style={tableCellStyle}>
-                                  <SettingBadge setting={item} />
-                                </td>
-                                <td style={tableCellStyle}>
-                                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                                    <button
-                                      type="button"
-                                      onClick={() => startEditSetting(item)}
-                                      style={miniButtonStyle(BLUE)}
-                                    >
-                                      Edit
-                                    </button>
-
-                                    {item.is_active ? (
-                                      <button
-                                        type="button"
-                                        disabled={isBusy}
-                                        onClick={() => toggleSettingActive(item, false)}
-                                        style={miniButtonStyle(RED)}
-                                      >
-                                        {isBusy ? "Working..." : "Deactivate"}
-                                      </button>
-                                    ) : (
-                                      <button
-                                        type="button"
-                                        disabled={isBusy}
-                                        onClick={() => toggleSettingActive(item, true)}
-                                        style={miniButtonStyle(GREEN)}
-                                      >
-                                        {isBusy ? "Working..." : "Activate"}
-                                      </button>
-                                    )}
-                                  </div>
-                                </td>
-                              </tr>
-                            );
-                          })
-                        ) : (
-                          <tr>
-                            <td
-                              colSpan={8}
-                              style={{
-                                padding: 20,
-                                textAlign: "center",
-                                color: MUTED,
-                              }}
-                            >
-                              No breakeven settings available.
-                            </td>
-                          </tr>
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
+              <div className="be-two-column-grid">
+                <SettingsTable
+                  settings={settings}
+                  isLoadingSettings={isLoadingSettings}
+                  isTogglingSettingId={isTogglingSettingId}
+                  startEditSetting={startEditSetting}
+                  toggleSettingActive={toggleSettingActive}
+                />
 
                 <div
                   style={{
@@ -1422,6 +1395,7 @@ export default function BreakevenIndexPage() {
                               justifyContent: "space-between",
                               gap: 10,
                               marginBottom: 8,
+                              flexWrap: "wrap",
                             }}
                           >
                             <div
@@ -1429,6 +1403,7 @@ export default function BreakevenIndexPage() {
                                 fontSize: 14,
                                 fontWeight: 700,
                                 color: TEXT,
+                                wordBreak: "break-word",
                               }}
                             >
                               {item.setting_name || "-"}
@@ -1443,12 +1418,7 @@ export default function BreakevenIndexPage() {
                               lineHeight: 1.7,
                             }}
                           >
-                            <div>
-                              Scope:{" "}
-                              {item.scope_type === "monthly"
-                                ? `Monthly (${item.month || "-"} / ${item.year || "-"})`
-                                : "Global"}
-                            </div>
+                            <div>Scope: {getScopeLabel(item)}</div>
                             <div>
                               Break Even Tonnes: {formatDecimal(item.break_even_quantity_tonnes)}
                             </div>
@@ -1471,6 +1441,269 @@ export default function BreakevenIndexPage() {
           )}
         </div>
       </div>
+
+      <style jsx global>{`
+        .be-shell {
+          width: 100%;
+          max-width: 1500px;
+          margin: 0 auto;
+          padding: 20px 20px 40px;
+          box-sizing: border-box;
+        }
+
+        .be-topbar {
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 20px;
+          flex-wrap: wrap;
+          margin-bottom: 18px;
+        }
+
+        .be-title-block {
+          min-width: 0;
+          flex: 1 1 420px;
+        }
+
+        .be-actions {
+          display: flex;
+          gap: 10px;
+          flex-wrap: wrap;
+          align-items: stretch;
+          justify-content: flex-end;
+          flex: 1 1 360px;
+        }
+
+        .be-panel {
+          border: 1px solid ${BORDER};
+          border-radius: 16px;
+          background: ${PAGE_BG};
+          padding: 16px;
+          margin-bottom: 18px;
+        }
+
+        .be-tabs {
+          display: flex;
+          gap: 12px;
+          flex-wrap: wrap;
+        }
+
+        .be-tab-button {
+          height: 40px;
+          padding: 0 16px;
+          border-radius: 10px;
+          cursor: pointer;
+          font-size: 13px;
+          font-weight: 700;
+          min-width: 0;
+        }
+
+        .be-form-grid {
+          display: grid;
+          gap: 12px;
+        }
+
+        .be-form-grid-summary {
+          grid-template-columns: repeat(5, minmax(0, 1fr));
+        }
+
+        .be-form-grid-settings {
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+        }
+
+        .be-textarea-grid {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 12px;
+          margin-top: 12px;
+        }
+
+        .be-summary-grid {
+          display: grid;
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+          gap: 12px;
+          margin-bottom: 18px;
+        }
+
+        .be-summary-card {
+          border: 1px solid ${BORDER};
+          border-radius: 14px;
+          background: ${CARD_BG};
+          padding: 14px;
+          min-height: 88px;
+          min-width: 0;
+        }
+
+        .be-two-column-grid {
+          display: grid;
+          grid-template-columns: minmax(0, 1.35fr) minmax(300px, 0.8fr);
+          gap: 18px;
+          align-items: start;
+          margin-bottom: 18px;
+        }
+
+        .be-desktop-table-wrap {
+          display: block;
+          overflow-x: auto;
+          width: 100%;
+          -webkit-overflow-scrolling: touch;
+        }
+
+        .be-desktop-table {
+          width: 100%;
+          min-width: 760px;
+          border-collapse: collapse;
+          font-size: 13px;
+        }
+
+        .be-mobile-card-list {
+          display: none;
+        }
+
+        .be-mobile-table-card {
+          border-top: 1px solid ${BORDER};
+          padding: 14px;
+          background: ${PAGE_BG};
+        }
+
+        .be-mobile-card-top {
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 10px;
+          margin-bottom: 10px;
+          flex-wrap: wrap;
+        }
+
+        .be-mobile-card-title {
+          font-size: 14px;
+          font-weight: 700;
+          color: ${TEXT};
+          word-break: break-word;
+        }
+
+        .be-mobile-card-index {
+          font-size: 12px;
+          color: ${MUTED};
+          white-space: nowrap;
+        }
+
+        .be-mobile-kv {
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 12px;
+          padding: 8px 0;
+          border-top: 1px solid ${BORDER};
+          font-size: 13px;
+        }
+
+        .be-mobile-kv:first-of-type {
+          border-top: none;
+        }
+
+        .be-mobile-kv span {
+          color: ${MUTED};
+          min-width: 0;
+        }
+
+        .be-mobile-kv strong {
+          color: ${TEXT};
+          text-align: right;
+          word-break: break-word;
+        }
+
+        .be-mobile-actions {
+          display: flex;
+          gap: 8px;
+          flex-wrap: wrap;
+          margin-top: 12px;
+        }
+
+        .be-preview-body {
+          height: 760px;
+          background: ${SOFT_2};
+        }
+
+        @media (max-width: 1180px) {
+          .be-form-grid-summary {
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+          }
+
+          .be-form-grid-settings {
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+          }
+
+          .be-summary-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+          }
+
+          .be-two-column-grid {
+            grid-template-columns: 1fr;
+          }
+
+          .be-preview-body {
+            height: 620px;
+          }
+        }
+
+        @media (max-width: 820px) {
+          .be-shell {
+            padding: 14px 14px 28px;
+          }
+
+          .be-actions {
+            width: 100%;
+            justify-content: flex-start;
+          }
+
+          .be-form-grid-summary,
+          .be-form-grid-settings,
+          .be-textarea-grid,
+          .be-summary-grid {
+            grid-template-columns: 1fr;
+          }
+
+          .be-preview-head {
+            align-items: flex-start;
+          }
+
+          .be-preview-body {
+            height: 480px;
+          }
+        }
+
+        @media (max-width: 640px) {
+          .be-shell {
+            padding: 12px 12px 24px;
+          }
+
+          .be-actions button,
+          .be-tabs button {
+            width: 100%;
+          }
+
+          .be-tab-button {
+            height: 42px;
+          }
+
+          .be-desktop-table-wrap {
+            display: none;
+          }
+
+          .be-mobile-card-list {
+            display: block;
+          }
+
+          .be-summary-card {
+            min-height: auto;
+          }
+
+          .be-preview-body {
+            height: 360px;
+          }
+        }
+      `}</style>
     </>
   );
 }
@@ -1568,6 +1801,15 @@ const readonlyBoxStyle = {
   alignItems: "center",
 };
 
+const tableHeadStyle = {
+  textAlign: "left",
+  padding: "12px",
+  borderBottom: `1px solid ${BORDER}`,
+  color: TEXT,
+  fontWeight: 700,
+  whiteSpace: "nowrap",
+};
+
 const tableCellStyle = {
   padding: "12px",
   borderBottom: `1px solid ${BORDER}`,
@@ -1582,6 +1824,7 @@ const settingInfoRowStyle = {
   gap: 12,
   padding: "10px 0",
   borderBottom: `1px solid ${BORDER}`,
+  flexWrap: "wrap",
 };
 
 const settingInfoLabelStyle = {
@@ -1594,4 +1837,6 @@ const settingInfoValueStyle = {
   color: TEXT,
   fontWeight: 600,
   textAlign: "right",
+  marginLeft: "auto",
+  wordBreak: "break-word",
 };
