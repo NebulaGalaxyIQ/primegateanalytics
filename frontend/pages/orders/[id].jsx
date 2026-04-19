@@ -4,20 +4,9 @@ import { useRouter } from "next/router";
 import OrderService from "../../services/orders";
 import { getToken } from "../../services/auth";
 
-/* ============================================================================
-   Order Detail Page
-   ----------------------------------------------------------------------------
-   Updated to match the new create flow:
-   - General Orders vs Frozen Containers
-   - Local / Chilled / Frozen subtype buttons for general orders
-   - Beef / Goat / Lamb product mix editor
-   - Auto-balancing ratios and quantities
-   - Price / shipment / paid / balance auto logic
-   - **Allows past dates for slaughter, departure, and gate-in**
-============================================================================ */
-
 const FONT_FAMILY = "Arial, sans-serif";
 const BG = "#ffffff";
+const SURFACE = "#ffffff";
 const TEXT = "#0f172a";
 const MUTED = "#64748b";
 const BORDER = "#e5e7eb";
@@ -30,6 +19,7 @@ const ORANGE = "#f97316";
 const ORANGE_SOFT = "rgba(249,115,22,0.10)";
 const RED = "#dc2626";
 const RED_SOFT = "rgba(220,38,38,0.10)";
+const SHADOW = "0 10px 30px rgba(15, 23, 42, 0.05)";
 
 const MODE_GENERAL = "general";
 const MODE_FROZEN = "frozen_container";
@@ -192,12 +182,6 @@ function statusPillStyle(status) {
   };
 }
 
-function addDays(baseDate, days) {
-  const d = new Date(baseDate);
-  d.setDate(d.getDate() + days);
-  return d;
-}
-
 function subtractDays(baseDate, days) {
   const d = new Date(baseDate);
   d.setDate(d.getDate() - days);
@@ -215,12 +199,6 @@ function toInputDate(value) {
   return `${yyyy}-${mm}-${dd}`;
 }
 
-function todayStr() {
-  return toInputDate(new Date());
-}
-
-// Removed clampDateToTodayOrFuture – now we allow any valid date (past, present, future)
-
 function dateStrMinusDays(dateStr, days) {
   if (!dateStr) return "";
   const d = new Date(`${dateStr}T00:00:00`);
@@ -235,11 +213,9 @@ function detectProductBucket(item) {
   if (animal === "cattle" || product.includes("beef") || product.includes("cattle")) {
     return "beef";
   }
-
   if (animal === "goat" || product.includes("goat")) {
     return "goat";
   }
-
   if (
     animal === "sheep" ||
     product.includes("lamb") ||
@@ -357,7 +333,13 @@ function rebalanceRatios(currentRatios, changedKey, nextChangedValue) {
   return next;
 }
 
-function distributeRemainingQuantity(totalQty, changedKey, changedQty, currentQuantities, currentRatios) {
+function distributeRemainingQuantity(
+  totalQty,
+  changedKey,
+  changedQty,
+  currentQuantities,
+  currentRatios
+) {
   const total = Math.max(Number(totalQty) || 0, 0);
   const next = { ...currentQuantities };
 
@@ -439,7 +421,9 @@ function buildEditableForm(order) {
 
     order_number: order?.order_number || "",
     enterprise_name: order?.enterprise_name || "",
-    order_profile: order?.order_profile || (mode === MODE_FROZEN ? "frozen_container" : "standard_order"),
+    order_profile:
+      order?.order_profile ||
+      (mode === MODE_FROZEN ? "frozen_container" : "standard_order"),
     order_type: order?.order_type || generalType,
     order_subtype: order?.order_subtype || "",
 
@@ -461,7 +445,8 @@ function buildEditableForm(order) {
     slaughter_schedule: toInputDate(order?.slaughter_schedule),
     expected_delivery: toInputDate(order?.expected_delivery),
     delivery_days_offset:
-      order?.delivery_days_offset !== null && order?.delivery_days_offset !== undefined
+      order?.delivery_days_offset !== null &&
+      order?.delivery_days_offset !== undefined
         ? String(order.delivery_days_offset)
         : "",
     is_delivery_date_manual: Boolean(order?.is_delivery_date_manual),
@@ -476,7 +461,8 @@ function buildEditableForm(order) {
     lamb_quantity_kg: numToInput(quantities.lamb, 2),
 
     shipment_value_usd:
-      order?.shipment_value_usd !== null && order?.shipment_value_usd !== undefined
+      order?.shipment_value_usd !== null &&
+      order?.shipment_value_usd !== undefined
         ? String(order.shipment_value_usd)
         : "",
     price_per_kg_usd:
@@ -541,36 +527,292 @@ function NoticeBanner({ notice, onClose }) {
         };
 
   return (
-    <div
-      style={{
-        ...styles,
-        borderRadius: 12,
-        padding: "12px 14px",
-        marginBottom: 14,
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "flex-start",
-        gap: 12,
-      }}
-    >
-      <div style={{ fontSize: 13, lineHeight: 1.5 }}>{notice.message}</div>
-      <button
-        type="button"
-        onClick={onClose}
-        style={{
-          border: "none",
-          background: "transparent",
-          color: "inherit",
-          cursor: "pointer",
-          fontSize: 14,
-          fontWeight: 700,
-          padding: 0,
-        }}
-      >
+    <div className="noticeBanner" style={styles}>
+      <div className="noticeText">{notice.message}</div>
+      <button type="button" onClick={onClose} className="noticeClose">
         ×
       </button>
     </div>
   );
+}
+
+function Section({ title, subtitle, children }) {
+  return (
+    <section className="sectionCard">
+      <div className="sectionHeader">
+        <div className="sectionTitle">{title}</div>
+        {subtitle ? <div className="sectionSubtitle">{subtitle}</div> : null}
+      </div>
+      <div className="sectionBody">{children}</div>
+    </section>
+  );
+}
+
+function SummaryCard({ label, value, hint, accent }) {
+  return (
+    <div className="summaryCard">
+      <div className="summaryLabel">{label}</div>
+      <div className="summaryValue" style={{ color: accent || TEXT }}>
+        {value}
+      </div>
+      <div className="summaryHint">{hint}</div>
+    </div>
+  );
+}
+
+function InfoRows({ rows }) {
+  return (
+    <div className="infoRows">
+      {rows.map((row, index) => (
+        <div
+          key={`${row.label}-${index}`}
+          className={`infoRow ${index === rows.length - 1 ? "last" : ""}`}
+        >
+          <div className="infoLabel">{row.label}</div>
+          <div className="infoValue">{row.value}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ModeButton({ active, onClick, children }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`choiceButton ${active ? "choiceButtonActive choiceBlue" : ""}`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function SubTypeButton({ active, onClick, children }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`choiceButton ${active ? "choiceButtonActive choiceOrange" : ""}`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function Input({
+  label,
+  value,
+  onChange,
+  placeholder,
+  type = "text",
+  min,
+  max,
+  step,
+}) {
+  return (
+    <label className="fieldBlock">
+      <div className="fieldLabel">{label}</div>
+      <input
+        type={type}
+        value={value}
+        min={min}
+        max={max}
+        step={step}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="fieldInput"
+      />
+    </label>
+  );
+}
+
+function TextArea({ label, value, onChange, placeholder, rows = 4 }) {
+  return (
+    <label className="fieldBlock">
+      <div className="fieldLabel">{label}</div>
+      <textarea
+        value={value}
+        rows={rows}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="fieldTextArea"
+      />
+    </label>
+  );
+}
+
+function Select({ label, value, onChange, options }) {
+  return (
+    <label className="fieldBlock">
+      <div className="fieldLabel">{label}</div>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="fieldInput"
+      >
+        {options.map((option) => (
+          <option key={`${label}-${option.value}`} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function Checkbox({ label, checked, onChange }) {
+  return (
+    <label className="checkboxField">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="checkboxInput"
+      />
+      <span className="checkboxLabel">{label}</span>
+    </label>
+  );
+}
+
+function ReadOnlyField({ label, value }) {
+  return (
+    <div className="fieldBlock">
+      <div className="fieldLabel">{label}</div>
+      <div className="readOnlyField">{value}</div>
+    </div>
+  );
+}
+
+function TableHead({ children }) {
+  return <th className="tableHead">{children}</th>;
+}
+
+function TableCell({ children }) {
+  return <td className="tableCell">{children}</td>;
+}
+
+function EmptyText({ text }) {
+  return <div className="emptyText">{text}</div>;
+}
+
+function LoadingBlock() {
+  return (
+    <div className="loadingBlock">
+      <div className="loadingCard loadingShort" />
+      <div className="loadingCard loadingMedium" />
+      <div className="loadingCard loadingTall" />
+    </div>
+  );
+}
+
+function ProductMixMobileCard({
+  productKey,
+  quantityValue,
+  ratioValue,
+  piecesValue,
+  onQuantityChange,
+  onRatioChange,
+}) {
+  return (
+    <div className="mobileMixCard">
+      <div className="mobileMixTitle">{PRODUCT_META[productKey].label}</div>
+
+      <div className="mobileMixGrid">
+        <label className="fieldBlock">
+          <div className="fieldLabel">Quantity (kg)</div>
+          <input
+            type="number"
+            step="0.01"
+            min="0"
+            value={quantityValue}
+            onChange={(e) => onQuantityChange(productKey, e.target.value)}
+            className="fieldInput"
+          />
+        </label>
+
+        <label className="fieldBlock">
+          <div className="fieldLabel">Ratio (%)</div>
+          <input
+            type="number"
+            step="0.01"
+            min="0"
+            max="100"
+            value={ratioValue}
+            onChange={(e) => onRatioChange(productKey, e.target.value)}
+            className="fieldInput"
+          />
+        </label>
+
+        <div className="fieldBlock mobileMixFull">
+          <div className="fieldLabel">Pieces Required</div>
+          <div className="readOnlyField">{formatNumber(piecesValue)}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ItemLineMobileCard({ item }) {
+  return (
+    <div className="itemCard">
+      <div className="itemCardTitle">{item.product_name || "—"}</div>
+      <div className="itemCardGrid">
+        <div className="itemMeta">
+          <div className="itemMetaLabel">Animal type</div>
+          <div className="itemMetaValue">{titleizeSlug(item.animal_type)}</div>
+        </div>
+        <div className="itemMeta">
+          <div className="itemMetaLabel">Quantity (kg)</div>
+          <div className="itemMetaValue">{formatNumber(item.quantity_kg, 2)}</div>
+        </div>
+        <div className="itemMeta">
+          <div className="itemMetaLabel">Pieces required</div>
+          <div className="itemMetaValue">{formatNumber(item.pieces_required)}</div>
+        </div>
+        <div className="itemMeta">
+          <div className="itemMetaLabel">Animals required</div>
+          <div className="itemMetaValue">{formatNumber(item.animals_required)}</div>
+        </div>
+        <div className="itemMeta itemMetaFull">
+          <div className="itemMetaLabel">Notes</div>
+          <div className="itemMetaValue">{item.notes || "—"}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function buttonPrimary(disabled) {
+  return {
+    background: BLUE,
+    color: "#fff",
+    border: "none",
+    borderRadius: 12,
+    padding: "10px 16px",
+    fontSize: 13,
+    fontWeight: 700,
+    cursor: disabled ? "not-allowed" : "pointer",
+    opacity: disabled ? 0.75 : 1,
+    minHeight: 42,
+    fontFamily: FONT_FAMILY,
+  };
+}
+
+function buttonSecondary(disabled) {
+  return {
+    border: `1px solid ${BORDER}`,
+    background: "#fff",
+    color: TEXT,
+    borderRadius: 12,
+    padding: "10px 14px",
+    fontSize: 13,
+    fontWeight: 600,
+    cursor: disabled ? "not-allowed" : "pointer",
+    opacity: disabled ? 0.75 : 1,
+    minHeight: 42,
+    fontFamily: FONT_FAMILY,
+  };
 }
 
 function OrderDetailPage() {
@@ -750,8 +992,10 @@ function OrderDetailPage() {
       };
 
       if (compactText(prev.departure_date)) {
-        // No clamping – allow past dates
-        next.slaughter_schedule = dateStrMinusDays(prev.departure_date, GENERAL_BACK_DAYS[type] || 4);
+        next.slaughter_schedule = dateStrMinusDays(
+          prev.departure_date,
+          GENERAL_BACK_DAYS[type] || 4
+        );
       }
 
       return next;
@@ -761,8 +1005,7 @@ function OrderDetailPage() {
   const applyProductState = (nextTotal, nextQuantities, nextRatios, options = {}) => {
     setForm((prev) => {
       const prefer =
-        options.prefer ||
-        (compactText(prev.price_per_kg_usd) ? "price" : "shipment");
+        options.prefer || (compactText(prev.price_per_kg_usd) ? "price" : "shipment");
 
       let nextPrice =
         options.price_per_kg_usd !== undefined
@@ -922,7 +1165,6 @@ function OrderDetailPage() {
   };
 
   const handleDepartureDateChange = (value) => {
-    // Allow any date, no clamping
     setForm((prev) => {
       const next = {
         ...prev,
@@ -930,7 +1172,10 @@ function OrderDetailPage() {
       };
 
       if (prev.order_profile !== "frozen_container" && value) {
-        next.slaughter_schedule = dateStrMinusDays(value, GENERAL_BACK_DAYS[prev.order_type] || 4);
+        next.slaughter_schedule = dateStrMinusDays(
+          value,
+          GENERAL_BACK_DAYS[prev.order_type] || 4
+        );
       }
 
       return next;
@@ -1088,214 +1333,67 @@ function OrderDetailPage() {
     }
   };
 
-  if (!authReady) {
+  if (!authReady || loading) {
     return (
-      <div
-        style={{
-          minHeight: "100vh",
-          background: BG,
-          color: TEXT,
-          fontFamily: FONT_FAMILY,
-          padding: "18px 22px 32px",
-          boxSizing: "border-box",
-        }}
-      >
-        <LoadingBlock />
-      </div>
-    );
-  }
-
-  if (loading) {
-    return (
-      <div
-        style={{
-          minHeight: "100vh",
-          background: BG,
-          color: TEXT,
-          fontFamily: FONT_FAMILY,
-          padding: "18px 22px 32px",
-          boxSizing: "border-box",
-        }}
-      >
-        <LoadingBlock />
+      <div className="pageShell">
+        <div className="pageContainer">
+          <LoadingBlock />
+        </div>
+        <style jsx>{pageStyles}</style>
       </div>
     );
   }
 
   if (error || !order) {
     return (
-      <div
-        style={{
-          minHeight: "100vh",
-          background: BG,
-          color: TEXT,
-          fontFamily: FONT_FAMILY,
-          padding: "18px 22px 32px",
-          boxSizing: "border-box",
-        }}
-      >
-        <div
-          style={{
-            maxWidth: "100%",
-            border: `1px solid ${BORDER}`,
-            borderRadius: 16,
-            background: "#fff",
-            padding: 20,
-          }}
-        >
-          <Link
-            href="/orders"
-            style={{
-              color: BLUE,
-              textDecoration: "none",
-              fontSize: 13,
-              fontWeight: 700,
-            }}
-          >
-            ← Back to orders
-          </Link>
+      <div className="pageShell">
+        <div className="pageContainer">
+          <div className="errorCard">
+            <Link href="/orders" className="backLink">
+              ← Back to orders
+            </Link>
 
-          <div
-            style={{
-              marginTop: 16,
-              fontSize: 22,
-              fontWeight: 700,
-            }}
-          >
-            Order not available
-          </div>
-
-          <div
-            style={{
-              marginTop: 8,
-              fontSize: 14,
-              color: RED,
-              lineHeight: 1.6,
-            }}
-          >
-            {error || "This order could not be loaded."}
+            <div className="errorTitle">Order not available</div>
+            <div className="errorText">{error || "This order could not be loaded."}</div>
           </div>
         </div>
+        <style jsx>{pageStyles}</style>
       </div>
     );
   }
 
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        background: BG,
-        color: TEXT,
-        fontFamily: FONT_FAMILY,
-      }}
-    >
-      <div
-        style={{
-          width: "100%",
-          maxWidth: "100%",
-          margin: 0,
-          padding: "18px 22px 32px",
-          boxSizing: "border-box",
-        }}
-      >
+    <div className="pageShell">
+      <div className="pageContainer">
         <NoticeBanner
           notice={notice}
           onClose={() => setNotice({ type: "", message: "" })}
         />
 
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "flex-start",
-            gap: 16,
-            flexWrap: "wrap",
-            marginBottom: 16,
-          }}
-        >
-          <div>
-            <Link
-              href="/orders"
-              style={{
-                color: BLUE,
-                textDecoration: "none",
-                fontSize: 13,
-                fontWeight: 700,
-              }}
-            >
+        <div className="topHeader">
+          <div className="topHeaderMain">
+            <Link href="/orders" className="backLink">
               ← Back to orders
             </Link>
 
-            <h1
-              style={{
-                margin: "10px 0 0",
-                fontSize: 25,
-                lineHeight: 1.2,
-                fontWeight: 700,
-                letterSpacing: "-0.02em",
-              }}
-            >
-              {order.order_number || `Order #${order.id}`}
-            </h1>
+            <h1 className="pageTitle">{order.order_number || `Order #${order.id}`}</h1>
 
-            <div
-              style={{
-                marginTop: 6,
-                display: "flex",
-                alignItems: "center",
-                gap: 10,
-                flexWrap: "wrap",
-              }}
-            >
-              <div style={{ fontSize: 13, color: MUTED }}>
-                {order.enterprise_name || "—"}
-              </div>
+            <div className="badgeRow">
+              <div className="enterpriseText">{order.enterprise_name || "—"}</div>
 
-              <span
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  padding: "6px 10px",
-                  borderRadius: 999,
-                  fontSize: 12,
-                  fontWeight: 700,
-                  ...statusPillStyle(order.status),
-                }}
-              >
+              <span className="statusPill" style={statusPillStyle(order.status)}>
                 {titleizeSlug(order.status)}
               </span>
 
-              <span
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  padding: "6px 10px",
-                  borderRadius: 999,
-                  fontSize: 12,
-                  fontWeight: 700,
-                  border: `1px solid ${BORDER}`,
-                  background: "#fff",
-                  color: TEXT,
-                }}
-              >
+              <span className="plainPill">
                 {currentMode === MODE_FROZEN ? "Frozen Container" : "General Order"}
               </span>
 
-              <div style={{ fontSize: 12, color: MUTED }}>
-                ID: {order.id}
-              </div>
+              <span className="mutedTiny">ID: {order.id}</span>
             </div>
           </div>
 
-          <div
-            style={{
-              display: "flex",
-              gap: 10,
-              flexWrap: "wrap",
-            }}
-          >
+          <div className="headerActions">
             <button
               type="button"
               onClick={() => fetchOrder(true)}
@@ -1307,14 +1405,7 @@ function OrderDetailPage() {
           </div>
         </div>
 
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(5, minmax(180px, 1fr))",
-            gap: 12,
-            marginBottom: 16,
-          }}
-        >
+        <div className="summaryGrid">
           <SummaryCard
             label="Total quantity"
             value={`${formatNumber(totalQuantity, 2)} kg`}
@@ -1347,7 +1438,7 @@ function OrderDetailPage() {
           title="Order overview"
           subtitle="Main identity, profile, reporting period, and timeline."
         >
-          <div style={twoColumnGrid}>
+          <div className="gridTwo">
             <InfoRows
               rows={[
                 { label: "Order number", value: order.order_number || "—" },
@@ -1361,6 +1452,7 @@ function OrderDetailPage() {
                 { label: "Status", value: titleizeSlug(order.status) },
               ]}
             />
+
             <InfoRows
               rows={[
                 {
@@ -1387,14 +1479,7 @@ function OrderDetailPage() {
           title="Setup"
           subtitle="Switch between General Orders and Frozen Containers, and update the main fields."
         >
-          <div
-            style={{
-              display: "flex",
-              gap: 10,
-              flexWrap: "wrap",
-              marginBottom: 14,
-            }}
-          >
+          <div className="choiceRow">
             <ModeButton
               active={currentMode === MODE_GENERAL}
               onClick={() => handleModeSwitch(MODE_GENERAL)}
@@ -1411,14 +1496,7 @@ function OrderDetailPage() {
           </div>
 
           {currentMode === MODE_GENERAL ? (
-            <div
-              style={{
-                display: "flex",
-                gap: 8,
-                flexWrap: "wrap",
-                marginBottom: 14,
-              }}
-            >
+            <div className="choiceRow subChoiceRow">
               {GENERAL_TYPES.map((item) => (
                 <SubTypeButton
                   key={item.value}
@@ -1432,7 +1510,7 @@ function OrderDetailPage() {
           ) : null}
 
           <form onSubmit={submitSetupUpdate}>
-            <div style={threeColumnGrid}>
+            <div className="gridThree">
               <Input
                 label="Order number"
                 value={form.order_number}
@@ -1487,10 +1565,10 @@ function OrderDetailPage() {
                 value={form.departure_date}
                 onChange={handleDepartureDateChange}
               />
-              <div />
+              <div className="desktopSpacer" />
             </div>
 
-            <div style={{ marginTop: 12 }}>
+            <div className="blockGap">
               <TextArea
                 label="Notes"
                 value={form.notes}
@@ -1500,7 +1578,7 @@ function OrderDetailPage() {
               />
             </div>
 
-            <div style={{ marginTop: 14, display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <div className="actionRow">
               <button type="submit" disabled={savingSetup} style={buttonPrimary(savingSetup)}>
                 {savingSetup ? "Saving..." : "Save setup"}
               </button>
@@ -1510,10 +1588,10 @@ function OrderDetailPage() {
 
         <Section
           title="Product mix and schedule"
-          subtitle="Edit Beef / Goat / Lamb by quantity or ratio. Changing one side updates the other automatically."
+          subtitle="Edit Beef, Goat, and Lamb by quantity or ratio. Changing one side updates the other automatically."
         >
           <form onSubmit={submitMixAndDeliveryUpdate}>
-            <div style={threeColumnGrid}>
+            <div className="gridThree">
               <Input
                 label="Total Quantity (kg)"
                 type="number"
@@ -1527,69 +1605,67 @@ function OrderDetailPage() {
               <ReadOnlyField label="Pieces required" value={formatNumber(totalPieces)} />
             </div>
 
-            <div style={{ marginTop: 14, overflowX: "auto", width: "100%" }}>
-              <table
-                style={{
-                  width: "100%",
-                  minWidth: 900,
-                  borderCollapse: "collapse",
-                }}
-              >
-                <thead>
-                  <tr
-                    style={{
-                      background: SOFT,
-                      borderBottom: `1px solid ${BORDER}`,
-                    }}
-                  >
-                    <TableHead>Product</TableHead>
-                    <TableHead>Quantity (kg)</TableHead>
-                    <TableHead>Ratio (%)</TableHead>
-                    <TableHead>Pieces Required</TableHead>
-                  </tr>
-                </thead>
-                <tbody>
-                  {PRODUCT_KEYS.map((key) => (
-                    <tr key={key} style={{ borderBottom: `1px solid ${BORDER}` }}>
-                      <TableCell>
-                        <strong>{PRODUCT_META[key].label}</strong>
-                      </TableCell>
-                      <TableCell>
-                        <input
-                          type="number"
-                          step="0.01"
-                          min="0"
-                          value={form[`${key}_quantity_kg`]}
-                          onChange={(e) => handleQuantityChange(key, e.target.value)}
-                          style={tableInputStyle}
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <input
-                          type="number"
-                          step="0.01"
-                          min="0"
-                          max="100"
-                          value={form[`${key}_ratio`]}
-                          onChange={(e) => handleRatioChange(key, e.target.value)}
-                          style={tableInputStyle}
-                        />
-                      </TableCell>
-                      <TableCell>{formatNumber(pieces[key])}</TableCell>
+            <div className="desktopMixTable">
+              <div className="tableWrap">
+                <table className="dataTable">
+                  <thead>
+                    <tr className="tableHeadRow">
+                      <TableHead>Product</TableHead>
+                      <TableHead>Quantity (kg)</TableHead>
+                      <TableHead>Ratio (%)</TableHead>
+                      <TableHead>Pieces Required</TableHead>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {PRODUCT_KEYS.map((key) => (
+                      <tr key={key} className="tableBodyRow">
+                        <TableCell>
+                          <strong>{PRODUCT_META[key].label}</strong>
+                        </TableCell>
+                        <TableCell>
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            value={form[`${key}_quantity_kg`]}
+                            onChange={(e) => handleQuantityChange(key, e.target.value)}
+                            className="tableInput"
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            max="100"
+                            value={form[`${key}_ratio`]}
+                            onChange={(e) => handleRatioChange(key, e.target.value)}
+                            className="tableInput"
+                          />
+                        </TableCell>
+                        <TableCell>{formatNumber(pieces[key])}</TableCell>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
 
-            <div
-              style={{
-                marginTop: 14,
-                display: "grid",
-                gridTemplateColumns: "repeat(4, minmax(180px, 1fr))",
-                gap: 12,
-              }}
-            >
+            <div className="mobileMixCards">
+              {PRODUCT_KEYS.map((key) => (
+                <ProductMixMobileCard
+                  key={key}
+                  productKey={key}
+                  quantityValue={form[`${key}_quantity_kg`]}
+                  ratioValue={form[`${key}_ratio`]}
+                  piecesValue={pieces[key]}
+                  onQuantityChange={handleQuantityChange}
+                  onRatioChange={handleRatioChange}
+                />
+              ))}
+            </div>
+
+            <div className="gridFour blockGap">
               <Input
                 label="Slaughter schedule"
                 type="date"
@@ -1617,7 +1693,7 @@ function OrderDetailPage() {
               />
             </div>
 
-            <div style={{ marginTop: 14, display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <div className="actionRow">
               <button type="submit" disabled={savingMix} style={buttonPrimary(savingMix)}>
                 {savingMix ? "Saving..." : "Save mix and schedule"}
               </button>
@@ -1632,41 +1708,48 @@ function OrderDetailPage() {
           {!Array.isArray(order?.items_json) || order.items_json.length === 0 ? (
             <EmptyText text="No item lines available for this order." />
           ) : (
-            <div style={{ overflowX: "auto", width: "100%" }}>
-              <table
-                style={{
-                  width: "100%",
-                  minWidth: 860,
-                  borderCollapse: "collapse",
-                }}
-              >
-                <thead>
-                  <tr style={{ background: SOFT, borderBottom: `1px solid ${BORDER}` }}>
-                    <TableHead>Product</TableHead>
-                    <TableHead>Animal type</TableHead>
-                    <TableHead>Quantity (kg)</TableHead>
-                    <TableHead>Pieces required</TableHead>
-                    <TableHead>Animals required</TableHead>
-                    <TableHead>Notes</TableHead>
-                  </tr>
-                </thead>
-                <tbody>
-                  {order.items_json.map((item, index) => (
-                    <tr
-                      key={`${item.product_name || "item"}-${index}`}
-                      style={{ borderBottom: `1px solid ${BORDER}` }}
-                    >
-                      <TableCell>{item.product_name || "—"}</TableCell>
-                      <TableCell>{titleizeSlug(item.animal_type)}</TableCell>
-                      <TableCell>{formatNumber(item.quantity_kg, 2)}</TableCell>
-                      <TableCell>{formatNumber(item.pieces_required)}</TableCell>
-                      <TableCell>{formatNumber(item.animals_required)}</TableCell>
-                      <TableCell>{item.notes || "—"}</TableCell>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <>
+              <div className="desktopItemsTable">
+                <div className="tableWrap">
+                  <table className="dataTable">
+                    <thead>
+                      <tr className="tableHeadRow">
+                        <TableHead>Product</TableHead>
+                        <TableHead>Animal type</TableHead>
+                        <TableHead>Quantity (kg)</TableHead>
+                        <TableHead>Pieces required</TableHead>
+                        <TableHead>Animals required</TableHead>
+                        <TableHead>Notes</TableHead>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {order.items_json.map((item, index) => (
+                        <tr
+                          key={`${item.product_name || "item"}-${index}`}
+                          className="tableBodyRow"
+                        >
+                          <TableCell>{item.product_name || "—"}</TableCell>
+                          <TableCell>{titleizeSlug(item.animal_type)}</TableCell>
+                          <TableCell>{formatNumber(item.quantity_kg, 2)}</TableCell>
+                          <TableCell>{formatNumber(item.pieces_required)}</TableCell>
+                          <TableCell>{formatNumber(item.animals_required)}</TableCell>
+                          <TableCell>{item.notes || "—"}</TableCell>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="mobileItemCards">
+                {order.items_json.map((item, index) => (
+                  <ItemLineMobileCard
+                    key={`${item.product_name || "item"}-${index}`}
+                    item={item}
+                  />
+                ))}
+              </div>
+            </>
           )}
         </Section>
 
@@ -1675,7 +1758,7 @@ function OrderDetailPage() {
           subtitle="Shipment, price per kg, amount paid, and balance are linked automatically."
         >
           <form onSubmit={submitFinancialUpdate}>
-            <div style={fourColumnGrid}>
+            <div className="gridFour">
               <Input
                 label="Shipment value (USD)"
                 type="number"
@@ -1706,7 +1789,7 @@ function OrderDetailPage() {
               />
             </div>
 
-            <div style={{ marginTop: 14, display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <div className="actionRow">
               <button
                 type="submit"
                 disabled={savingFinancial}
@@ -1722,7 +1805,7 @@ function OrderDetailPage() {
           title="Status management"
           subtitle="Change the lifecycle status for this order."
         >
-          <div style={twoColumnGrid}>
+          <div className="gridTwo">
             <InfoRows rows={[{ label: "Current status", value: titleizeSlug(order.status) }]} />
 
             <form onSubmit={submitStatusUpdate}>
@@ -1733,7 +1816,7 @@ function OrderDetailPage() {
                 options={ORDER_STATUS_OPTIONS}
               />
 
-              <div style={{ marginTop: 14, display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <div className="actionRow">
                 <button type="submit" disabled={savingStatus} style={buttonPrimary(savingStatus)}>
                   {savingStatus ? "Saving..." : "Save status"}
                 </button>
@@ -1742,506 +1825,633 @@ function OrderDetailPage() {
           </div>
         </Section>
       </div>
+
+      <style jsx>{pageStyles}</style>
     </div>
   );
 }
 
-function Section({ title, subtitle, children }) {
-  return (
-    <div
-      style={{
-        border: `1px solid ${BORDER}`,
-        borderRadius: 16,
-        background: "#fff",
-        overflow: "hidden",
-        marginBottom: 16,
-      }}
-    >
-      <div
-        style={{
-          padding: "14px 16px",
-          borderBottom: `1px solid ${BORDER}`,
-        }}
-      >
-        <div
-          style={{
-            fontSize: 15,
-            fontWeight: 700,
-            lineHeight: 1.3,
-          }}
-        >
-          {title}
-        </div>
-        {subtitle ? (
-          <div
-            style={{
-              marginTop: 4,
-              fontSize: 12,
-              color: MUTED,
-              lineHeight: 1.5,
-            }}
-          >
-            {subtitle}
-          </div>
-        ) : null}
-      </div>
+const pageStyles = `
+  .pageShell {
+    min-height: 100vh;
+    background: ${BG};
+    color: ${TEXT};
+    font-family: ${FONT_FAMILY};
+  }
 
-      <div style={{ padding: 16 }}>{children}</div>
-    </div>
-  );
-}
+  .pageContainer {
+    width: 100%;
+    max-width: 1440px;
+    margin: 0 auto;
+    padding: 18px 22px 32px;
+    box-sizing: border-box;
+    overflow-x: hidden;
+  }
 
-function SummaryCard({ label, value, hint, accent }) {
-  return (
-    <div
-      style={{
-        border: `1px solid ${BORDER}`,
-        borderRadius: 14,
-        background: "#fff",
-        padding: "14px 16px",
-      }}
-    >
-      <div style={{ fontSize: 12, color: MUTED, marginBottom: 7 }}>{label}</div>
-      <div
-        style={{
-          fontSize: 22,
-          fontWeight: 700,
-          lineHeight: 1.15,
-          letterSpacing: "-0.02em",
-          color: accent || TEXT,
-        }}
-      >
-        {value}
-      </div>
-      <div style={{ marginTop: 4, fontSize: 12, color: MUTED }}>{hint}</div>
-    </div>
-  );
-}
+  .topHeader {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+  }
 
-function InfoRows({ rows }) {
-  return (
-    <div
-      style={{
-        border: `1px solid ${BORDER}`,
-        borderRadius: 12,
-        overflow: "hidden",
-      }}
-    >
-      {rows.map((row, index) => (
-        <div
-          key={`${row.label}-${index}`}
-          style={{
-            display: "grid",
-            gridTemplateColumns: "190px 1fr",
-            gap: 14,
-            padding: "12px 14px",
-            borderBottom: index === rows.length - 1 ? "none" : `1px solid ${BORDER}`,
-            background: "#fff",
-          }}
-        >
-          <div
-            style={{
-              fontSize: 12,
-              fontWeight: 700,
-              color: "#334155",
-            }}
-          >
-            {row.label}
-          </div>
-          <div
-            style={{
-              fontSize: 13,
-              color: TEXT,
-              lineHeight: 1.55,
-              wordBreak: "break-word",
-            }}
-          >
-            {row.value}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
+  .topHeaderMain {
+    min-width: 0;
+    flex: 1 1 360px;
+  }
 
-function ModeButton({ active, onClick, children }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      style={{
-        border: active ? `1px solid ${BLUE}` : `1px solid ${BORDER}`,
-        background: active ? BLUE_SOFT : "#fff",
-        color: active ? BLUE : TEXT,
-        borderRadius: 10,
-        padding: "10px 16px",
-        fontSize: 13,
-        fontWeight: 700,
-        cursor: "pointer",
-      }}
-    >
-      {children}
-    </button>
-  );
-}
+  .headerActions {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
 
-function SubTypeButton({ active, onClick, children }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      style={{
-        border: active ? `1px solid ${ORANGE}` : `1px solid ${BORDER}`,
-        background: active ? ORANGE_SOFT : "#fff",
-        color: active ? ORANGE : TEXT,
-        borderRadius: 10,
-        padding: "9px 14px",
-        fontSize: 13,
-        fontWeight: 700,
-        cursor: "pointer",
-      }}
-    >
-      {children}
-    </button>
-  );
-}
+  .backLink {
+    display: inline-flex;
+    color: ${BLUE};
+    text-decoration: none;
+    font-size: 13px;
+    font-weight: 700;
+  }
 
-function Input({
-  label,
-  value,
-  onChange,
-  placeholder,
-  type = "text",
-  min,
-  max,
-  step,
-}) {
-  return (
-    <label style={{ display: "block", minWidth: 0 }}>
-      <div
-        style={{
-          fontSize: 12,
-          fontWeight: 700,
-          color: "#334155",
-          marginBottom: 6,
-        }}
-      >
-        {label}
-      </div>
-      <input
-        type={type}
-        value={value}
-        min={min}
-        max={max}
-        step={step}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        style={inputStyle}
-      />
-    </label>
-  );
-}
+  .pageTitle {
+    margin: 10px 0 0;
+    font-size: 25px;
+    line-height: 1.2;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    word-break: break-word;
+  }
 
-function TextArea({ label, value, onChange, placeholder, rows = 4 }) {
-  return (
-    <label style={{ display: "block", minWidth: 0 }}>
-      <div
-        style={{
-          fontSize: 12,
-          fontWeight: 700,
-          color: "#334155",
-          marginBottom: 6,
-        }}
-      >
-        {label}
-      </div>
-      <textarea
-        value={value}
-        rows={rows}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        style={textAreaStyle}
-      />
-    </label>
-  );
-}
+  .badgeRow {
+    margin-top: 6px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
 
-function Select({ label, value, onChange, options }) {
-  return (
-    <label style={{ display: "block", minWidth: 0 }}>
-      <div
-        style={{
-          fontSize: 12,
-          fontWeight: 700,
-          color: "#334155",
-          marginBottom: 6,
-        }}
-      >
-        {label}
-      </div>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        style={selectStyle}
-      >
-        {options.map((option) => (
-          <option key={`${label}-${option.value}`} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
+  .enterpriseText {
+    font-size: 13px;
+    color: ${MUTED};
+    word-break: break-word;
+  }
 
-function Checkbox({ label, checked, onChange }) {
-  return (
-    <label
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 10,
-        minHeight: 42,
-        paddingTop: 24,
-        boxSizing: "border-box",
-      }}
-    >
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-        style={{ width: 16, height: 16, cursor: "pointer" }}
-      />
-      <span
-        style={{
-          fontSize: 13,
-          color: TEXT,
-          fontWeight: 600,
-        }}
-      >
-        {label}
-      </span>
-    </label>
-  );
-}
+  .statusPill,
+  .plainPill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 6px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 700;
+    white-space: nowrap;
+  }
 
-function ReadOnlyField({ label, value }) {
-  return (
-    <div style={{ minWidth: 0 }}>
-      <div
-        style={{
-          fontSize: 12,
-          fontWeight: 700,
-          color: "#334155",
-          marginBottom: 6,
-        }}
-      >
-        {label}
-      </div>
-      <div
-        style={{
-          minHeight: 42,
-          display: "flex",
-          alignItems: "center",
-          padding: "0 12px",
-          borderRadius: 10,
-          border: `1px solid ${BORDER}`,
-          background: SOFT,
-          color: TEXT,
-          fontSize: 13,
-          boxSizing: "border-box",
-        }}
-      >
-        {value}
-      </div>
-    </div>
-  );
-}
+  .plainPill {
+    border: 1px solid ${BORDER};
+    background: #fff;
+    color: ${TEXT};
+  }
 
-function TableHead({ children }) {
-  return (
-    <th
-      style={{
-        textAlign: "left",
-        padding: "12px 14px",
-        fontSize: 12,
-        fontWeight: 700,
-        color: "#334155",
-        whiteSpace: "nowrap",
-      }}
-    >
-      {children}
-    </th>
-  );
-}
+  .mutedTiny {
+    font-size: 12px;
+    color: ${MUTED};
+  }
 
-function TableCell({ children }) {
-  return (
-    <td
-      style={{
-        padding: "14px",
-        fontSize: 13,
-        color: TEXT,
-        verticalAlign: "top",
-        lineHeight: 1.55,
-      }}
-    >
-      {children}
-    </td>
-  );
-}
+  .noticeBanner {
+    border-radius: 14px;
+    padding: 12px 14px;
+    margin-bottom: 14px;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+  }
 
-function EmptyText({ text }) {
-  return (
-    <div
-      style={{
-        color: MUTED,
-        fontSize: 13,
-        lineHeight: 1.6,
-      }}
-    >
-      {text}
-    </div>
-  );
-}
+  .noticeText {
+    font-size: 13px;
+    line-height: 1.5;
+  }
 
-function LoadingBlock() {
-  return (
-    <div
-      style={{
-        display: "grid",
-        gap: 12,
-      }}
-    >
-      <div
-        style={{
-          height: 88,
-          borderRadius: 16,
-          border: `1px solid ${BORDER}`,
-          background: "#fff",
-        }}
-      />
-      <div
-        style={{
-          height: 160,
-          borderRadius: 16,
-          border: `1px solid ${BORDER}`,
-          background: "#fff",
-        }}
-      />
-      <div
-        style={{
-          height: 220,
-          borderRadius: 16,
-          border: `1px solid ${BORDER}`,
-          background: "#fff",
-        }}
-      />
-    </div>
-  );
-}
+  .noticeClose {
+    border: none;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 700;
+    padding: 0;
+  }
 
-function buttonPrimary(disabled) {
-  return {
-    background: BLUE,
-    color: "#fff",
-    border: "none",
-    borderRadius: 10,
-    padding: "10px 16px",
-    fontSize: 13,
-    fontWeight: 700,
-    cursor: disabled ? "not-allowed" : "pointer",
-    opacity: disabled ? 0.75 : 1,
-  };
-}
+  .summaryGrid {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+  }
 
-function buttonSecondary(disabled) {
-  return {
-    border: `1px solid ${BORDER}`,
-    background: "#fff",
-    color: TEXT,
-    borderRadius: 10,
-    padding: "10px 14px",
-    fontSize: 13,
-    fontWeight: 600,
-    cursor: disabled ? "not-allowed" : "pointer",
-    opacity: disabled ? 0.75 : 1,
-  };
-}
+  .summaryCard {
+    border: 1px solid ${BORDER};
+    border-radius: 16px;
+    background: ${SURFACE};
+    padding: 14px 16px;
+    box-shadow: ${SHADOW};
+    min-width: 0;
+  }
 
-const inputStyle = {
-  width: "100%",
-  height: 42,
-  padding: "0 12px",
-  borderRadius: 10,
-  border: `1px solid ${BORDER}`,
-  background: "#fff",
-  color: TEXT,
-  fontSize: 13,
-  fontFamily: FONT_FAMILY,
-  outline: "none",
-  boxSizing: "border-box",
-};
+  .summaryLabel {
+    font-size: 12px;
+    color: ${MUTED};
+    margin-bottom: 7px;
+  }
 
-const selectStyle = {
-  width: "100%",
-  height: 42,
-  padding: "0 12px",
-  borderRadius: 10,
-  border: `1px solid ${BORDER}`,
-  background: "#fff",
-  color: TEXT,
-  fontSize: 13,
-  fontFamily: FONT_FAMILY,
-  outline: "none",
-  boxSizing: "border-box",
-};
+  .summaryValue {
+    font-size: 22px;
+    font-weight: 700;
+    line-height: 1.15;
+    letter-spacing: -0.02em;
+    word-break: break-word;
+  }
 
-const textAreaStyle = {
-  width: "100%",
-  padding: "10px 12px",
-  borderRadius: 10,
-  border: `1px solid ${BORDER}`,
-  background: "#fff",
-  color: TEXT,
-  fontSize: 13,
-  fontFamily: FONT_FAMILY,
-  outline: "none",
-  resize: "vertical",
-  boxSizing: "border-box",
-  lineHeight: 1.6,
-};
+  .summaryHint {
+    margin-top: 4px;
+    font-size: 12px;
+    color: ${MUTED};
+    line-height: 1.45;
+  }
 
-const tableInputStyle = {
-  width: "100%",
-  height: 38,
-  padding: "0 10px",
-  borderRadius: 8,
-  border: `1px solid ${BORDER}`,
-  background: "#fff",
-  color: TEXT,
-  fontSize: 13,
-  fontFamily: FONT_FAMILY,
-  outline: "none",
-  boxSizing: "border-box",
-};
+  .sectionCard {
+    border: 1px solid ${BORDER};
+    border-radius: 16px;
+    background: #fff;
+    overflow: hidden;
+    margin-bottom: 16px;
+    box-shadow: ${SHADOW};
+  }
 
-const twoColumnGrid = {
-  display: "grid",
-  gridTemplateColumns: "1fr 1fr",
-  gap: 14,
-};
+  .sectionHeader {
+    padding: 14px 16px;
+    border-bottom: 1px solid ${BORDER};
+  }
 
-const threeColumnGrid = {
-  display: "grid",
-  gridTemplateColumns: "repeat(3, minmax(220px, 1fr))",
-  gap: 12,
-};
+  .sectionTitle {
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1.3;
+  }
 
-const fourColumnGrid = {
-  display: "grid",
-  gridTemplateColumns: "repeat(4, minmax(180px, 1fr))",
-  gap: 12,
-};
+  .sectionSubtitle {
+    margin-top: 4px;
+    font-size: 12px;
+    color: ${MUTED};
+    line-height: 1.5;
+  }
+
+  .sectionBody {
+    padding: 16px;
+  }
+
+  .gridTwo {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+  }
+
+  .gridThree {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(220px, 1fr));
+    gap: 12px;
+  }
+
+  .gridFour {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(180px, 1fr));
+    gap: 12px;
+  }
+
+  .desktopSpacer {
+    display: block;
+  }
+
+  .choiceRow {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 14px;
+  }
+
+  .subChoiceRow {
+    gap: 8px;
+  }
+
+  .choiceButton {
+    border: 1px solid ${BORDER};
+    background: #fff;
+    color: ${TEXT};
+    border-radius: 12px;
+    padding: 10px 16px;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    min-height: 42px;
+    font-family: ${FONT_FAMILY};
+  }
+
+  .choiceButtonActive.choiceBlue {
+    border-color: ${BLUE};
+    background: ${BLUE_SOFT};
+    color: ${BLUE};
+  }
+
+  .choiceButtonActive.choiceOrange {
+    border-color: ${ORANGE};
+    background: ${ORANGE_SOFT};
+    color: ${ORANGE};
+  }
+
+  .fieldBlock {
+    display: block;
+    min-width: 0;
+  }
+
+  .fieldLabel {
+    font-size: 12px;
+    font-weight: 700;
+    color: #334155;
+    margin-bottom: 6px;
+  }
+
+  .fieldInput,
+  .fieldTextArea,
+  .tableInput {
+    width: 100%;
+    box-sizing: border-box;
+    font-family: ${FONT_FAMILY};
+    outline: none;
+    color: ${TEXT};
+    background: #fff;
+  }
+
+  .fieldInput {
+    height: 42px;
+    padding: 0 12px;
+    border-radius: 12px;
+    border: 1px solid ${BORDER};
+    font-size: 13px;
+  }
+
+  .fieldTextArea {
+    padding: 10px 12px;
+    border-radius: 12px;
+    border: 1px solid ${BORDER};
+    font-size: 13px;
+    resize: vertical;
+    line-height: 1.6;
+  }
+
+  .readOnlyField {
+    min-height: 42px;
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    border-radius: 12px;
+    border: 1px solid ${BORDER};
+    background: ${SOFT};
+    color: ${TEXT};
+    font-size: 13px;
+    box-sizing: border-box;
+    line-height: 1.45;
+  }
+
+  .checkboxField {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 42px;
+    padding-top: 24px;
+    box-sizing: border-box;
+  }
+
+  .checkboxInput {
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+    flex: 0 0 auto;
+  }
+
+  .checkboxLabel {
+    font-size: 13px;
+    color: ${TEXT};
+    font-weight: 600;
+    line-height: 1.45;
+  }
+
+  .blockGap {
+    margin-top: 14px;
+  }
+
+  .actionRow {
+    margin-top: 14px;
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .tableWrap {
+    overflow-x: auto;
+    width: 100%;
+  }
+
+  .dataTable {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  .tableHeadRow {
+    background: ${SOFT};
+    border-bottom: 1px solid ${BORDER};
+  }
+
+  .tableBodyRow {
+    border-bottom: 1px solid ${BORDER};
+  }
+
+  .tableHead {
+    text-align: left;
+    padding: 12px 14px;
+    font-size: 12px;
+    font-weight: 700;
+    color: #334155;
+    white-space: nowrap;
+  }
+
+  .tableCell {
+    padding: 14px;
+    font-size: 13px;
+    color: ${TEXT};
+    vertical-align: top;
+    line-height: 1.55;
+  }
+
+  .tableInput {
+    height: 38px;
+    padding: 0 10px;
+    border-radius: 10px;
+    border: 1px solid ${BORDER};
+    font-size: 13px;
+  }
+
+  .desktopMixTable,
+  .desktopItemsTable {
+    display: block;
+    margin-top: 14px;
+  }
+
+  .mobileMixCards,
+  .mobileItemCards {
+    display: none;
+  }
+
+  .mobileMixCard,
+  .itemCard {
+    border: 1px solid ${BORDER};
+    border-radius: 16px;
+    background: #fff;
+    padding: 14px;
+  }
+
+  .mobileMixCard + .mobileMixCard,
+  .itemCard + .itemCard {
+    margin-top: 12px;
+  }
+
+  .mobileMixTitle,
+  .itemCardTitle {
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1.35;
+    margin-bottom: 12px;
+    color: ${TEXT};
+  }
+
+  .mobileMixGrid,
+  .itemCardGrid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .mobileMixFull,
+  .itemMetaFull {
+    grid-column: 1 / -1;
+  }
+
+  .itemMeta {
+    min-width: 0;
+  }
+
+  .itemMetaLabel {
+    font-size: 11px;
+    font-weight: 700;
+    color: ${MUTED};
+    margin-bottom: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+  }
+
+  .itemMetaValue {
+    font-size: 13px;
+    color: ${TEXT};
+    line-height: 1.5;
+    word-break: break-word;
+  }
+
+  .infoRows {
+    border: 1px solid ${BORDER};
+    border-radius: 12px;
+    overflow: hidden;
+  }
+
+  .infoRow {
+    display: grid;
+    grid-template-columns: 190px 1fr;
+    gap: 14px;
+    padding: 12px 14px;
+    border-bottom: 1px solid ${BORDER};
+    background: #fff;
+  }
+
+  .infoRow.last {
+    border-bottom: none;
+  }
+
+  .infoLabel {
+    font-size: 12px;
+    font-weight: 700;
+    color: #334155;
+  }
+
+  .infoValue {
+    font-size: 13px;
+    color: ${TEXT};
+    line-height: 1.55;
+    word-break: break-word;
+  }
+
+  .emptyText {
+    color: ${MUTED};
+    font-size: 13px;
+    line-height: 1.6;
+  }
+
+  .loadingBlock {
+    display: grid;
+    gap: 12px;
+  }
+
+  .loadingCard {
+    border-radius: 16px;
+    border: 1px solid ${BORDER};
+    background: #fff;
+  }
+
+  .loadingShort {
+    height: 88px;
+  }
+
+  .loadingMedium {
+    height: 160px;
+  }
+
+  .loadingTall {
+    height: 220px;
+  }
+
+  .errorCard {
+    max-width: 100%;
+    border: 1px solid ${BORDER};
+    border-radius: 16px;
+    background: #fff;
+    padding: 20px;
+    box-shadow: ${SHADOW};
+  }
+
+  .errorTitle {
+    margin-top: 16px;
+    font-size: 22px;
+    font-weight: 700;
+  }
+
+  .errorText {
+    margin-top: 8px;
+    font-size: 14px;
+    color: ${RED};
+    line-height: 1.6;
+  }
+
+  @media (max-width: 1280px) {
+    .summaryGrid {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .gridFour {
+      grid-template-columns: repeat(2, minmax(180px, 1fr));
+    }
+  }
+
+  @media (max-width: 1024px) {
+    .gridTwo,
+    .gridThree,
+    .gridFour {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .summaryGrid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .infoRow {
+      grid-template-columns: 150px 1fr;
+    }
+  }
+
+  @media (max-width: 760px) {
+    .pageContainer {
+      padding: 14px 12px 24px;
+    }
+
+    .pageTitle {
+      font-size: 22px;
+    }
+
+    .summaryGrid,
+    .gridTwo,
+    .gridThree,
+    .gridFour {
+      grid-template-columns: 1fr;
+    }
+
+    .desktopSpacer {
+      display: none;
+    }
+
+    .desktop    .desktopMixTable,
+    .desktopItemsTable {
+      display: none;
+    }
+
+    .mobileMixCards,
+    .mobileItemCards {
+      display: block;
+      margin-top: 14px;
+    }
+
+    .infoRow {
+      grid-template-columns: 1fr;
+      gap: 6px;
+    }
+
+    .headerActions {
+      width: 100%;
+    }
+
+    .headerActions button {
+      width: 100%;
+    }
+
+    .choiceRow {
+      gap: 8px;
+    }
+
+    .choiceButton {
+      flex: 1 1 100%;
+      width: 100%;
+    }
+
+    .actionRow button {
+      width: 100%;
+    }
+
+    .checkboxField {
+      padding-top: 0;
+      min-height: 42px;
+    }
+
+    .mobileMixGrid,
+    .itemCardGrid {
+      grid-template-columns: 1fr;
+      gap: 10px;
+    }
+
+    .mobileMixFull,
+    .itemMetaFull {
+      grid-column: auto;
+    }
+  }
+`;
 
 export default OrderDetailPage;
