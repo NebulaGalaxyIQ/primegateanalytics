@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
-from math import ceil
+from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_HALF_UP
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import (
@@ -39,16 +38,18 @@ class Order(Base):
     STATUS_COMPLETED = "completed"
     STATUS_CANCELLED = "cancelled"
 
+    # Pieces required logic stays separate from animals required logic.
     PIECES_DIVISORS = {
-        "goat": 8.5,
-        "sheep": 11,
-        "cattle": 145,
+        "goat": Decimal("8.5"),
+        "sheep": Decimal("11"),
+        "cattle": Decimal("145"),
     }
 
+    # Updated to your approved standard carcass weights.
     ANIMALS_DIVISORS = {
-        "goat": 20,
-        "sheep": 23,
-        "cattle": 200,
+        "goat": Decimal("9"),
+        "sheep": Decimal("13"),
+        "cattle": Decimal("145"),
     }
 
     DELIVERY_OFFSETS = {
@@ -70,6 +71,8 @@ class Order(Base):
 
     MONEY_2DP = Decimal("0.01")
     MONEY_4DP = Decimal("0.0001")
+    QUANTITY_2DP = Decimal("0.01")
+    ORDER_RATIO_MAX_LENGTH = 200
 
     id = Column(Integer, primary_key=True, index=True)
 
@@ -89,15 +92,12 @@ class Order(Base):
 
     status = Column(String(30), index=True, nullable=False, default=STATUS_DRAFT)
 
-    # Reporting month/year for business planning reports.
-    # Useful especially for frozen containers and monthly confirmed reports.
+    # Reporting month/year for business planning reports
     report_month = Column(Integer, index=True, nullable=True)
     report_year = Column(Integer, index=True, nullable=True)
 
     # Commercial / shipping / payment details
-    # These are optional for all order types.
-    # For frozen container reports, shipment_value_usd can be shown as Container Value (USD).
-    order_ratio = Column(String(30), nullable=True)
+    order_ratio = Column(String(ORDER_RATIO_MAX_LENGTH), nullable=True)
     shipment_value_usd = Column(Numeric(14, 2), nullable=True)
     price_per_kg_usd = Column(Numeric(14, 4), nullable=True)
     amount_paid_usd = Column(Numeric(14, 2), nullable=True)
@@ -110,17 +110,6 @@ class Order(Base):
     product_summary = Column(Text, nullable=True)
 
     # One order can still carry multiple lines/products.
-    # Example:
-    # [
-    #   {
-    #     "product_name": "Goat",
-    #     "animal_type": "goat",
-    #     "quantity_kg": 1000,
-    #     "pieces_required": 118,
-    #     "animals_required": 50,
-    #     "notes": ""
-    #   }
-    # ]
     items_json = Column(JSON, nullable=False, default=list)
 
     # Operational totals
@@ -179,43 +168,43 @@ class Order(Base):
 
     @staticmethod
     def normalize_slug(value: Optional[str]) -> str:
-        value = (value or "").strip().lower().replace("-", "_").replace(" ", "_")
-        while "__" in value:
-            value = value.replace("__", "_")
-        return value
+        text = (value or "").strip().lower().replace("-", "_").replace(" ", "_")
+        while "__" in text:
+            text = text.replace("__", "_")
+        return text
 
     @staticmethod
     def normalize_text(value: Optional[str]) -> Optional[str]:
         if value is None:
             return None
-        value = value.strip()
-        return value or None
+        text = str(value).strip()
+        return text or None
 
     @classmethod
     def normalize_order_type(cls, value: Optional[str]) -> str:
-        value = cls.normalize_slug(value)
-        if value not in {
+        text = cls.normalize_slug(value)
+        if text not in {
             cls.ORDER_TYPE_LOCAL,
             cls.ORDER_TYPE_CHILLED,
             cls.ORDER_TYPE_FROZEN,
         }:
             raise ValueError("Invalid order type. Use local, chilled, or frozen.")
-        return value
+        return text
 
     @classmethod
     def normalize_order_profile(cls, value: Optional[str]) -> str:
-        value = cls.normalize_slug(value)
-        if value not in {
+        text = cls.normalize_slug(value)
+        if text not in {
             cls.ORDER_PROFILE_STANDARD,
             cls.ORDER_PROFILE_FROZEN_CONTAINER,
         }:
             raise ValueError("Invalid order profile. Use standard_order or frozen_container.")
-        return value
+        return text
 
     @classmethod
     def normalize_status(cls, value: Optional[str]) -> str:
-        value = cls.normalize_slug(value)
-        if value not in {
+        text = cls.normalize_slug(value)
+        if text not in {
             cls.STATUS_DRAFT,
             cls.STATUS_CONFIRMED,
             cls.STATUS_IN_PROGRESS,
@@ -225,14 +214,14 @@ class Order(Base):
             raise ValueError(
                 "Invalid status. Use draft, confirmed, in_progress, completed, or cancelled."
             )
-        return value
+        return text
 
     @classmethod
     def normalize_order_subtype(cls, value: Optional[str]) -> Optional[str]:
         if value is None:
             return None
-        value = cls.normalize_slug(value)
-        return value or None
+        text = cls.normalize_slug(value)
+        return text or None
 
     @classmethod
     def normalize_animal_type(cls, value: Optional[str]) -> Optional[str]:
@@ -265,9 +254,29 @@ class Order(Base):
             return 0.0
         try:
             number = float(value)
-            return max(number, 0.0)
         except (TypeError, ValueError):
             raise ValueError(f"Invalid numeric value: {value}")
+        return max(number, 0.0)
+
+    @classmethod
+    def safe_decimal(cls, value: Any, places: Decimal = None, allow_zero: bool = True) -> Decimal:
+        places = places or cls.QUANTITY_2DP
+
+        if value in (None, "", "null"):
+            number = Decimal("0")
+        else:
+            try:
+                number = Decimal(str(value))
+            except (InvalidOperation, TypeError, ValueError):
+                raise ValueError(f"Invalid numeric value: {value}")
+
+        if number < 0:
+            number = Decimal("0")
+
+        if not allow_zero and number <= 0:
+            raise ValueError(f"Value must be greater than zero: {value}")
+
+        return number.quantize(places, rounding=ROUND_HALF_UP)
 
     @classmethod
     def safe_money(cls, value: Any, places: Decimal = None) -> Decimal:
@@ -287,18 +296,25 @@ class Order(Base):
         return number.quantize(places, rounding=ROUND_HALF_UP)
 
     @classmethod
+    def calculate_required_units(cls, quantity_kg: float, divisor: Decimal) -> int:
+        quantity = cls.safe_decimal(quantity_kg, cls.QUANTITY_2DP)
+        if quantity <= 0 or divisor <= 0:
+            return 0
+        return int((quantity / divisor).to_integral_value(rounding=ROUND_CEILING))
+
+    @classmethod
     def calculate_pieces_required(cls, quantity_kg: float, animal_type: str) -> int:
         divisor = cls.PIECES_DIVISORS.get(animal_type)
         if not divisor:
             raise ValueError(f"Unsupported animal type for pieces calculation: {animal_type}")
-        return ceil(quantity_kg / divisor) if quantity_kg > 0 else 0
+        return cls.calculate_required_units(quantity_kg, divisor)
 
     @classmethod
     def calculate_animals_required(cls, quantity_kg: float, animal_type: str) -> int:
         divisor = cls.ANIMALS_DIVISORS.get(animal_type)
         if not divisor:
             raise ValueError(f"Unsupported animal type for animals calculation: {animal_type}")
-        return ceil(quantity_kg / divisor) if quantity_kg > 0 else 0
+        return cls.calculate_required_units(quantity_kg, divisor)
 
     @classmethod
     def get_default_delivery_offset(cls, order_type: str) -> int:
@@ -330,7 +346,9 @@ class Order(Base):
                 {
                     "product_name": product_name or animal_type.title(),
                     "animal_type": animal_type,
-                    "quantity_kg": round(quantity_kg, 2),
+                    "quantity_kg": float(
+                        cls.safe_decimal(quantity_kg, cls.QUANTITY_2DP)
+                    ),
                     "pieces_required": pieces_required,
                     "animals_required": animals_required,
                     "notes": cls.normalize_text(raw_item.get("notes")),
@@ -344,7 +362,7 @@ class Order(Base):
         if not items:
             return None
 
-        parts = []
+        parts: List[str] = []
         for item in items:
             product_name = item.get("product_name") or item.get("animal_type", "").title()
             quantity_kg = float(item.get("quantity_kg", 0) or 0)
@@ -352,7 +370,11 @@ class Order(Base):
         return ", ".join(parts)
 
     @classmethod
-    def validate_report_period(cls, month: Optional[int], year: Optional[int]) -> tuple[Optional[int], Optional[int]]:
+    def validate_report_period(
+        cls,
+        month: Optional[int],
+        year: Optional[int],
+    ) -> tuple[Optional[int], Optional[int]]:
         if month is None and year is None:
             return None, None
 
@@ -369,7 +391,6 @@ class Order(Base):
 
     @classmethod
     def get_reporting_anchor_date(cls, target: "Order") -> Optional[date]:
-        # Frozen container report grouping can use logistics dates first.
         if target.order_profile == cls.ORDER_PROFILE_FROZEN_CONTAINER:
             return (
                 target.container_gate_in
@@ -432,8 +453,6 @@ class Order(Base):
 
         target.order_profile = cls.normalize_order_profile(target.order_profile)
 
-        # Frozen container entries must always count as frozen orders
-        # so they automatically flow into frozen sections and summaries.
         if target.order_profile == cls.ORDER_PROFILE_FROZEN_CONTAINER:
             target.order_type = cls.ORDER_TYPE_FROZEN
         else:
@@ -450,9 +469,9 @@ class Order(Base):
         target.items_json = normalized_items
         target.product_summary = cls.build_product_summary(normalized_items)
 
-        goat_qty = 0.0
-        sheep_qty = 0.0
-        cattle_qty = 0.0
+        goat_qty = Decimal("0.00")
+        sheep_qty = Decimal("0.00")
+        cattle_qty = Decimal("0.00")
 
         goat_pieces = 0
         sheep_pieces = 0
@@ -462,15 +481,15 @@ class Order(Base):
         sheep_required = 0
         cattle_required = 0
 
-        total_quantity_kg = 0.0
+        total_quantity_kg = Decimal("0.00")
         total_pieces_required = 0
         total_animals_required = 0
 
         for item in normalized_items:
             animal_type = item["animal_type"]
-            quantity_kg = cls.safe_float(item["quantity_kg"])
-            pieces_required = int(item["pieces_required"])
-            animals_required = int(item["animals_required"])
+            quantity_kg = cls.safe_decimal(item["quantity_kg"], cls.QUANTITY_2DP)
+            pieces_required = int(item["pieces_required"] or 0)
+            animals_required = int(item["animals_required"] or 0)
 
             total_quantity_kg += quantity_kg
             total_pieces_required += pieces_required
@@ -489,26 +508,22 @@ class Order(Base):
                 cattle_pieces += pieces_required
                 cattle_required += animals_required
 
-        target.total_quantity_kg = round(total_quantity_kg, 2)
+        target.total_quantity_kg = total_quantity_kg.quantize(cls.QUANTITY_2DP, rounding=ROUND_HALF_UP)
         target.total_pieces_required = total_pieces_required
         target.total_animals_required = total_animals_required
 
-        target.goat_quantity_kg = round(goat_qty, 2)
+        target.goat_quantity_kg = goat_qty.quantize(cls.QUANTITY_2DP, rounding=ROUND_HALF_UP)
         target.goat_pieces_required = goat_pieces
         target.goats_required = goats_required
 
-        target.sheep_quantity_kg = round(sheep_qty, 2)
+        target.sheep_quantity_kg = sheep_qty.quantize(cls.QUANTITY_2DP, rounding=ROUND_HALF_UP)
         target.sheep_pieces_required = sheep_pieces
         target.sheep_required = sheep_required
 
-        target.cattle_quantity_kg = round(cattle_qty, 2)
+        target.cattle_quantity_kg = cattle_qty.quantize(cls.QUANTITY_2DP, rounding=ROUND_HALF_UP)
         target.cattle_pieces_required = cattle_pieces
         target.cattle_required = cattle_required
 
-        # Auto delivery date logic:
-        # - local: same day unless custom offset/manual date
-        # - chilled: +2 days unless custom offset/manual date
-        # - frozen: +10 days unless custom offset/manual date
         if target.slaughter_schedule:
             if not target.is_delivery_date_manual:
                 offset = (
@@ -518,22 +533,13 @@ class Order(Base):
                 )
                 if offset < 0:
                     offset = 0
-
                 target.expected_delivery = target.slaughter_schedule + timedelta(days=offset)
         else:
             if not target.is_delivery_date_manual:
                 target.expected_delivery = None
 
-        # Financial auto-calculation:
-        # - shipment_value_usd is optional
-        # - price_per_kg_usd is optional
-        # - amount_paid_usd is optional
-        # - balance_usd is always recalculated
         cls.apply_financial_computations(target)
 
-        # Reporting period:
-        # user may set report_month/report_year manually.
-        # if not set, system derives them from relevant dates.
         report_month, report_year = cls.validate_report_period(
             target.report_month,
             target.report_year,

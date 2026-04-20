@@ -148,7 +148,7 @@ class OrderBase(BaseModel):
     report_month: Optional[int] = Field(default=None, ge=1, le=12)
     report_year: Optional[int] = Field(default=None, ge=2000, le=2100)
 
-    order_ratio: Optional[str] = Field(default=None, max_length=30)
+    order_ratio: Optional[str] = Field(default=None, max_length=200)
 
     shipment_value_usd: Optional[Decimal] = Field(default=None, ge=0)
     price_per_kg_usd: Optional[Decimal] = Field(default=None, ge=0)
@@ -279,7 +279,7 @@ class OrderUpdate(BaseModel):
     report_month: Optional[int] = Field(default=None, ge=1, le=12)
     report_year: Optional[int] = Field(default=None, ge=2000, le=2100)
 
-    order_ratio: Optional[str] = Field(default=None, max_length=30)
+    order_ratio: Optional[str] = Field(default=None, max_length=200)
 
     shipment_value_usd: Optional[Decimal] = Field(default=None, ge=0)
     price_per_kg_usd: Optional[Decimal] = Field(default=None, ge=0)

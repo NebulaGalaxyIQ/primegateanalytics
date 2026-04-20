@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from calendar import month_name, monthrange
 from datetime import date, datetime
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_HALF_UP
 from typing import Iterable, List, Optional, Union
 
 from sqlalchemy import and_, or_
@@ -37,6 +37,11 @@ DECIMAL_ZERO = Decimal("0.00")
 TWO_PLACES = Decimal("0.01")
 FOUR_PLACES = Decimal("0.0001")
 
+# Standard carcass weights approved by user
+GOAT_STANDARD_CARCASS_WEIGHT_KG = Decimal("9")
+SHEEP_STANDARD_CARCASS_WEIGHT_KG = Decimal("13")
+CATTLE_STANDARD_CARCASS_WEIGHT_KG = Decimal("145")
+
 
 # =============================================================================
 # Core helpers
@@ -48,28 +53,31 @@ def decimal_zero() -> Decimal:
 def normalize_text(value: Optional[str]) -> Optional[str]:
     if value is None:
         return None
-    value = value.strip()
-    return value or None
+    text = str(value).strip()
+    return text or None
+
+
+def to_decimal(value: Union[Decimal, int, float, str, None], default: Decimal = DECIMAL_ZERO) -> Decimal:
+    if value in (None, "", "null"):
+        return default
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return default
 
 
 def quantize_2(value: Union[Decimal, int, float, str, None]) -> Decimal:
-    if value is None or value == "":
-        return DECIMAL_ZERO
-    return Decimal(str(value)).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+    return to_decimal(value).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
 
 
 def quantize_4(value: Union[Decimal, int, float, str, None]) -> Decimal:
-    if value is None or value == "":
-        return Decimal("0.0000")
-    return Decimal(str(value)).quantize(FOUR_PLACES, rounding=ROUND_HALF_UP)
+    return to_decimal(value).quantize(FOUR_PLACES, rounding=ROUND_HALF_UP)
 
 
 def decimal_sum(values: Iterable[Union[Decimal, int, float, str, None]]) -> Decimal:
     total = Decimal("0.00")
     for value in values:
-        if value is None or value == "":
-            continue
-        total += Decimal(str(value))
+        total += to_decimal(value)
     return total.quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
 
 
@@ -96,20 +104,54 @@ def build_animal_projection_title(month: int, year: int) -> str:
 
 
 # =============================================================================
+# Animal requirement helpers
+# =============================================================================
+def ceil_division(quantity_kg: Union[Decimal, int, float, str, None], carcass_weight_kg: Decimal) -> int:
+    quantity = to_decimal(quantity_kg)
+
+    if quantity <= DECIMAL_ZERO or carcass_weight_kg <= DECIMAL_ZERO:
+        return 0
+
+    return int((quantity / carcass_weight_kg).to_integral_value(rounding=ROUND_CEILING))
+
+
+def compute_animals_required_from_quantities(
+    goat_quantity_kg: Union[Decimal, int, float, str, None],
+    sheep_quantity_kg: Union[Decimal, int, float, str, None],
+    cattle_quantity_kg: Union[Decimal, int, float, str, None],
+) -> dict[str, int]:
+    goats_required = ceil_division(goat_quantity_kg, GOAT_STANDARD_CARCASS_WEIGHT_KG)
+    sheep_required = ceil_division(sheep_quantity_kg, SHEEP_STANDARD_CARCASS_WEIGHT_KG)
+    cattle_required = ceil_division(cattle_quantity_kg, CATTLE_STANDARD_CARCASS_WEIGHT_KG)
+
+    return {
+        "goats_required": goats_required,
+        "sheep_required": sheep_required,
+        "cattle_required": cattle_required,
+        "total_animals_required": goats_required + sheep_required + cattle_required,
+    }
+
+
+def compute_order_animals_required(order: Order) -> dict[str, int]:
+    return compute_animals_required_from_quantities(
+        goat_quantity_kg=getattr(order, "goat_quantity_kg", None),
+        sheep_quantity_kg=getattr(order, "sheep_quantity_kg", None),
+        cattle_quantity_kg=getattr(order, "cattle_quantity_kg", None),
+    )
+
+
+# =============================================================================
 # Business calculations
 # =============================================================================
 def compute_breakeven_metrics(
     completed_quantity_kg: Decimal,
     breakeven_quantity_kg: Optional[Decimal],
-) -> dict:
+) -> dict[str, Decimal]:
     """
-    Important business rule:
     Only COMPLETED orders count toward breakeven achieved quantities.
     """
     target = quantize_2(
-        breakeven_quantity_kg
-        if breakeven_quantity_kg is not None
-        else DEFAULT_BREAKEVEN_QUANTITY_KG
+        breakeven_quantity_kg if breakeven_quantity_kg is not None else DEFAULT_BREAKEVEN_QUANTITY_KG
     )
     achieved_quantity = quantize_2(completed_quantity_kg)
 
@@ -149,7 +191,7 @@ def compute_breakeven_metrics(
     }
 
 
-def get_four_week_bucket(day_number: int, last_day_of_month: int) -> int:
+def get_four_week_bucket(day_number: int, _last_day_of_month: int) -> int:
     """
     Divide every month into exactly 4 business weeks:
     - Week 1: day 1 to 7
@@ -178,10 +220,9 @@ def week_label(week_number: int) -> str:
 
 def get_projection_anchor_date(order: Order) -> Optional[date]:
     """
-    Animal projection is based on slaughter schedule as requested.
-    Only slaughter_schedule should decide the week bucket.
+    Animal projection is based strictly on slaughter_schedule.
     """
-    return order.slaughter_schedule
+    return getattr(order, "slaughter_schedule", None)
 
 
 def is_completed_order(order: Order) -> bool:
@@ -317,6 +358,8 @@ def build_order_row(
     order: Order,
     serial_no: int,
 ) -> OrdersReportRow:
+    animals = compute_order_animals_required(order)
+
     return OrdersReportRow(
         serial_no=serial_no,
         order_id=order.id,
@@ -331,31 +374,19 @@ def build_order_row(
         product_summary=order.product_summary,
         total_quantity_kg=quantize_2(order.total_quantity_kg),
         total_pieces_required=int(order.total_pieces_required or 0),
-        total_animals_required=int(order.total_animals_required or 0),
+        total_animals_required=animals["total_animals_required"],
         goat_quantity_kg=quantize_2(order.goat_quantity_kg),
         goat_pieces_required=int(order.goat_pieces_required or 0),
-        goats_required=int(order.goats_required or 0),
+        goats_required=animals["goats_required"],
         sheep_quantity_kg=quantize_2(order.sheep_quantity_kg),
         sheep_pieces_required=int(order.sheep_pieces_required or 0),
-        sheep_required=int(order.sheep_required or 0),
+        sheep_required=animals["sheep_required"],
         cattle_quantity_kg=quantize_2(order.cattle_quantity_kg),
         cattle_pieces_required=int(order.cattle_pieces_required or 0),
-        cattle_required=int(order.cattle_required or 0),
-        shipment_value_usd=(
-            quantize_2(order.shipment_value_usd)
-            if order.shipment_value_usd is not None
-            else None
-        ),
-        price_per_kg_usd=(
-            quantize_4(order.price_per_kg_usd)
-            if order.price_per_kg_usd is not None
-            else None
-        ),
-        amount_paid_usd=(
-            quantize_2(order.amount_paid_usd)
-            if order.amount_paid_usd is not None
-            else None
-        ),
+        cattle_required=animals["cattle_required"],
+        shipment_value_usd=quantize_2(order.shipment_value_usd) if order.shipment_value_usd is not None else None,
+        price_per_kg_usd=quantize_4(order.price_per_kg_usd) if order.price_per_kg_usd is not None else None,
+        amount_paid_usd=quantize_2(order.amount_paid_usd) if order.amount_paid_usd is not None else None,
         balance_usd=quantize_2(order.balance_usd) if order.balance_usd is not None else None,
         slaughter_schedule=order.slaughter_schedule,
         expected_delivery=order.expected_delivery,
@@ -376,21 +407,9 @@ def build_frozen_container_row(
         client_name=order.enterprise_name,
         order_ratio=order.order_ratio,
         status=order.status,
-        container_value_usd=(
-            quantize_2(order.shipment_value_usd)
-            if order.shipment_value_usd is not None
-            else None
-        ),
-        price_per_kg_usd=(
-            quantize_4(order.price_per_kg_usd)
-            if order.price_per_kg_usd is not None
-            else None
-        ),
-        down_payment_usd=(
-            quantize_2(order.amount_paid_usd)
-            if order.amount_paid_usd is not None
-            else None
-        ),
+        container_value_usd=quantize_2(order.shipment_value_usd) if order.shipment_value_usd is not None else None,
+        price_per_kg_usd=quantize_4(order.price_per_kg_usd) if order.price_per_kg_usd is not None else None,
+        down_payment_usd=quantize_2(order.amount_paid_usd) if order.amount_paid_usd is not None else None,
         balance_usd=quantize_2(order.balance_usd) if order.balance_usd is not None else None,
         container_gate_in=order.container_gate_in,
         departure_date=order.departure_date,
@@ -491,11 +510,14 @@ def build_monthly_summary(
         breakeven_quantity_kg=breakeven_quantity_kg,
     )
 
+    def animals_total(group: List[Order]) -> int:
+        return sum(compute_order_animals_required(order)["total_animals_required"] for order in group)
+
     return OrdersMonthlySummary(
         total_orders=len(orders),
         total_quantity_kg=total_quantity_kg,
         total_pieces_required=sum(int(order.total_pieces_required or 0) for order in orders),
-        total_animals_required=sum(int(order.total_animals_required or 0) for order in orders),
+        total_animals_required=animals_total(orders),
         total_shipment_value_usd=decimal_sum(order.shipment_value_usd for order in orders),
         total_amount_paid_usd=decimal_sum(order.amount_paid_usd for order in orders),
         total_balance_usd=decimal_sum(order.balance_usd for order in orders),
@@ -507,15 +529,15 @@ def build_monthly_summary(
         local_total_orders=len(local_orders),
         local_total_quantity_kg=decimal_sum(order.total_quantity_kg for order in local_orders),
         local_total_pieces_required=sum(int(order.total_pieces_required or 0) for order in local_orders),
-        local_total_animals_required=sum(int(order.total_animals_required or 0) for order in local_orders),
+        local_total_animals_required=animals_total(local_orders),
         chilled_total_orders=len(chilled_orders),
         chilled_total_quantity_kg=decimal_sum(order.total_quantity_kg for order in chilled_orders),
         chilled_total_pieces_required=sum(int(order.total_pieces_required or 0) for order in chilled_orders),
-        chilled_total_animals_required=sum(int(order.total_animals_required or 0) for order in chilled_orders),
+        chilled_total_animals_required=animals_total(chilled_orders),
         frozen_total_orders=len(frozen_orders),
         frozen_total_quantity_kg=decimal_sum(order.total_quantity_kg for order in frozen_orders),
         frozen_total_pieces_required=sum(int(order.total_pieces_required or 0) for order in frozen_orders),
-        frozen_total_animals_required=sum(int(order.total_animals_required or 0) for order in frozen_orders),
+        frozen_total_animals_required=animals_total(frozen_orders),
     )
 
 
@@ -524,7 +546,9 @@ def build_monthly_totals(orders: List[Order]) -> OrdersMonthlyTotals:
         total_orders=len(orders),
         total_quantity_kg=decimal_sum(order.total_quantity_kg for order in orders),
         total_pieces_required=sum(int(order.total_pieces_required or 0) for order in orders),
-        total_animals_required=sum(int(order.total_animals_required or 0) for order in orders),
+        total_animals_required=sum(
+            compute_order_animals_required(order)["total_animals_required"] for order in orders
+        ),
         total_shipment_value_usd=decimal_sum(order.shipment_value_usd for order in orders),
         total_amount_paid_usd=decimal_sum(order.amount_paid_usd for order in orders),
         total_balance_usd=decimal_sum(order.balance_usd for order in orders),
@@ -537,15 +561,12 @@ def build_animal_projection(
     year: int,
 ) -> AnimalProjectionBlock:
     """
-    Requirements from user:
+    Requirements:
     - Always show exactly 4 weeks in every month.
     - Use slaughter_schedule to place animals into weeks.
     - If a week has no animals, show zeros.
-    - Week buckets:
-        1st Week = days 1-7
-        2nd Week = days 8-14
-        3rd Week = days 15-21
-        4th Week = days 22-end of month
+    - Animal calculations must use approved standard carcass weights:
+      cattle=145kg, goat=9kg, sheep=13kg.
     """
     _, month_end_date = build_month_date_range(month, year)
     last_day_of_month = month_end_date.day
@@ -566,10 +587,11 @@ def build_animal_projection(
             continue
 
         bucket_number = get_four_week_bucket(anchor_date.day, last_day_of_month)
+        animals = compute_order_animals_required(order)
 
-        weekly_buckets[bucket_number]["goats"] += int(order.goats_required or 0)
-        weekly_buckets[bucket_number]["sheep"] += int(order.sheep_required or 0)
-        weekly_buckets[bucket_number]["cattle"] += int(order.cattle_required or 0)
+        weekly_buckets[bucket_number]["goats"] += animals["goats_required"]
+        weekly_buckets[bucket_number]["sheep"] += animals["sheep_required"]
+        weekly_buckets[bucket_number]["cattle"] += animals["cattle_required"]
 
     rows: List[AnimalProjectionRow] = []
     for bucket_number in (1, 2, 3, 4):
@@ -604,10 +626,7 @@ def build_frozen_containers_totals(orders: List[Order]) -> FrozenContainersMonth
 
 
 def build_frozen_container_rows(orders: List[Order]) -> List[FrozenContainersReportRow]:
-    return [
-        build_frozen_container_row(order, serial_no=index)
-        for index, order in enumerate(orders, start=1)
-    ]
+    return [build_frozen_container_row(order, serial_no=index) for index, order in enumerate(orders, start=1)]
 
 
 # =============================================================================
@@ -703,10 +722,7 @@ def build_breakeven_summary_report_data(
     request: BreakevenSummaryReportRequest,
 ) -> BreakevenSummaryReportData:
     """
-    Important behavior:
     This report is always computed live from Orders through the breakeven service.
-    That means it automatically reflects the latest order bookings/completions
-    every time the report is requested.
     """
     return breakeven_report_service.build_breakeven_summary_report(db, request)
 
@@ -742,8 +758,7 @@ def build_default_report_filename(
     safe_format = (report_format or "pdf").strip().lower()
     today_str = date.today().strftime("%Y%m%d")
 
-    report_key = (report_type or "report").strip().lower()
-    report_key = report_key.replace("-", "_").replace(" ", "_")
+    report_key = (report_type or "report").strip().lower().replace("-", "_").replace(" ", "_")
 
     if report_key == "orders_monthly":
         title = "Order Confirmed Report"
