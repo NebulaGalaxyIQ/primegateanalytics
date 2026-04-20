@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import mimetypes
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -10,17 +11,23 @@ from fastapi import (
     Depends,
     File,
     Form,
+    HTTPException,
     Query,
     UploadFile,
     status,
 )
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.security import get_current_active_user
 from app.models.byproducts import (
+    ByproductCustomerType,
+    ByproductPaymentMode,
+    ByproductSaleStatus,
     ByproductTemplateFormat,
     ByproductTemplateType,
+    ByproductUnit,
 )
 from app.models.user import User
 from app.schemas.byproducts import (
@@ -63,12 +70,12 @@ from app.services.byproducts_report_service import (
     get_byproduct_summary,
     get_category_summary,
     get_customer_summary,
+    get_custom_period_report,
     get_daily_report,
     get_dashboard_summary,
     get_monthly_report,
     get_trend_report,
     get_weekly_report,
-    get_custom_period_report,
 )
 from app.services.byproducts_service import (
     create_category,
@@ -119,9 +126,60 @@ from app.services.byproducts_template_service import (
 
 router = APIRouter(prefix="/byproducts", tags=["Byproducts"])
 
+BASE_DIR = Path(__file__).resolve().parents[2]
+GENERATED_DIR = BASE_DIR / "storage" / "byproducts" / "generated"
+
 
 def _actor_id(current_user: User | None) -> UUID | None:
     return getattr(current_user, "id", None)
+
+
+def _resolve_generated_file(file_name: str) -> Path:
+    cleaned = Path((file_name or "").strip()).name
+    if not cleaned:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="file_name is required",
+        )
+
+    target = (GENERATED_DIR / cleaned).resolve()
+    generated_root = GENERATED_DIR.resolve()
+
+    try:
+        target.relative_to(generated_root)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid generated file path",
+        )
+
+    if not target.exists() or not target.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Generated file not found",
+        )
+
+    return target
+
+
+# =============================================================================
+# GENERATED FILE DOWNLOAD ROUTE
+# =============================================================================
+
+
+@router.get("/generated/download")
+def download_generated_byproduct_file(
+    file_name: str = Query(..., min_length=1),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    file_path = _resolve_generated_file(file_name)
+    media_type, _ = mimetypes.guess_type(str(file_path))
+    return FileResponse(
+        path=str(file_path),
+        filename=file_path.name,
+        media_type=media_type or "application/octet-stream",
+    )
 
 
 # =============================================================================
@@ -248,7 +306,7 @@ def create_byproduct_item(
 def list_byproduct_items(
     search: str | None = Query(default=None),
     category_id: UUID | None = Query(default=None),
-    unit_of_measure: str | None = Query(default=None),
+    unit_of_measure: ByproductUnit | None = Query(default=None),
     is_active: bool | None = Query(default=None),
     include_deleted: bool = Query(default=False),
     skip: int = Query(default=0, ge=0),
@@ -350,7 +408,7 @@ def create_byproduct_customer(
 )
 def list_byproduct_customers(
     search: str | None = Query(default=None),
-    customer_type: str | None = Query(default=None),
+    customer_type: ByproductCustomerType | None = Query(default=None),
     business_location: str | None = Query(default=None),
     district: str | None = Query(default=None),
     region: str | None = Query(default=None),
@@ -462,8 +520,8 @@ def list_byproduct_sales(
     customer_id: UUID | None = Query(default=None),
     byproduct_id: UUID | None = Query(default=None),
     category_id: UUID | None = Query(default=None),
-    payment_mode: str | None = Query(default=None),
-    status_value: str | None = Query(default=None, alias="status"),
+    payment_mode: ByproductPaymentMode | None = Query(default=None),
+    status_value: ByproductSaleStatus | None = Query(default=None, alias="status"),
     include_deleted: bool = Query(default=False),
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=500),

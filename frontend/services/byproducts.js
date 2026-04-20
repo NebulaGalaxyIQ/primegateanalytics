@@ -146,6 +146,10 @@ function normalizeReportFilterPayload(payload = {}) {
     }
   });
 
+  if (isPlainObject(body.report_filter)) {
+    body.report_filter = normalizeReportFilterPayload(body.report_filter);
+  }
+
   return stripUndefined(body);
 }
 
@@ -183,32 +187,7 @@ function buildReplaceTemplateFileFormData(file) {
   return form;
 }
 
-function normalizeGeneratedFileMeta(payload) {
-  const data = unwrapData(payload);
-  if (!isPlainObject(data)) return data;
-
-  return {
-    ...data,
-    file_url: data.file_url || null,
-    normalized_file_path:
-      typeof data.file_path === "string"
-        ? data.file_path.replace(/\\/g, "/")
-        : data.file_path,
-  };
-}
-
 function getApiBaseUrl() {
-  if (typeof window !== "undefined") {
-    const envUrl =
-      process.env.NEXT_PUBLIC_API_BASE_URL ||
-      process.env.NEXT_PUBLIC_API_URL ||
-      process.env.NEXT_PUBLIC_BACKEND_URL;
-
-    if (envUrl && String(envUrl).trim()) {
-      return String(envUrl).trim().replace(/\/+$/, "");
-    }
-  }
-
   const envUrl =
     process.env.NEXT_PUBLIC_API_BASE_URL ||
     process.env.NEXT_PUBLIC_API_URL ||
@@ -219,6 +198,138 @@ function getApiBaseUrl() {
   }
 
   return "http://127.0.0.1:8000";
+}
+
+function isAbsoluteUrl(value) {
+  return /^https?:\/\//i.test(String(value || "").trim());
+}
+
+function makeAbsoluteApiUrl(value) {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!text) return null;
+  if (isAbsoluteUrl(text)) return text;
+  return `${getApiBaseUrl()}${text.startsWith("/") ? text : `/${text}`}`;
+}
+
+function buildGeneratedDocumentFallbackDownloadUrl(fileName) {
+  const clean = typeof fileName === "string" ? fileName.trim() : "";
+  if (!clean) return null;
+  return `${ROUTES.generatedDownload}${buildQueryString({ file_name: clean })}`;
+}
+
+function normalizeGeneratedFileMeta(payload) {
+  const data = unwrapData(payload);
+  if (!isPlainObject(data)) return data;
+
+  const normalizedFilePath =
+    typeof data.file_path === "string"
+      ? data.file_path.replace(/\\/g, "/")
+      : data.file_path || null;
+
+  const relativeDownloadUrl =
+    typeof data.download_url === "string" && data.download_url.trim()
+      ? data.download_url.trim()
+      : buildGeneratedDocumentFallbackDownloadUrl(data.file_name);
+
+  const absoluteDownloadUrl = makeAbsoluteApiUrl(relativeDownloadUrl);
+
+  return {
+    ...data,
+    normalized_file_path: normalizedFilePath,
+    relative_download_url: relativeDownloadUrl || null,
+    download_url: absoluteDownloadUrl,
+    file_url: absoluteDownloadUrl,
+  };
+}
+
+function ensureGeneratedDocumentDownloadUrl(meta) {
+  const normalized = normalizeGeneratedFileMeta(meta);
+  const url =
+    normalized && typeof normalized.download_url === "string"
+      ? normalized.download_url.trim()
+      : "";
+
+  if (!url) {
+    throw new Error(
+      "Generated document download URL is missing. Please regenerate the document."
+    );
+  }
+
+  return normalized;
+}
+
+async function fetchAuthorizedFileBlob(url, token) {
+  const authToken = sanitizeToken(token !== undefined ? token : getToken?.());
+  const headers = {};
+
+  if (authToken) {
+    headers.Authorization = `Bearer ${authToken}`;
+  }
+
+  let response;
+  try {
+    response = await fetch(url, {
+      method: "GET",
+      headers,
+    });
+  } catch (networkError) {
+    const err = new Error(networkError?.message || "File download failed");
+    err.status = null;
+    err.data = null;
+    err.url = url;
+    throw err;
+  }
+
+  if (!response.ok) {
+    let errorData = null;
+
+    try {
+      const contentType = response.headers.get("content-type") || "";
+      if (contentType.includes("application/json")) {
+        errorData = await response.json();
+      } else {
+        errorData = await response.text();
+      }
+    } catch {
+      errorData = null;
+    }
+
+    const message = extractErrorMessage(errorData, "File download failed");
+    const err = new Error(message);
+    err.status = response.status;
+    err.data = errorData;
+    err.url = url;
+    throw err;
+  }
+
+  return response.blob();
+}
+
+function triggerBrowserDownload(blob, fileName) {
+  if (typeof window === "undefined") return;
+
+  const objectUrl = window.URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = fileName || "download";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+
+  setTimeout(() => {
+    window.URL.revokeObjectURL(objectUrl);
+  }, 1000);
+}
+
+function openBlobInNewTab(blob) {
+  if (typeof window === "undefined") return;
+
+  const objectUrl = window.URL.createObjectURL(blob);
+  window.open(objectUrl, "_blank", "noopener,noreferrer");
+
+  setTimeout(() => {
+    window.URL.revokeObjectURL(objectUrl);
+  }, 60000);
 }
 
 async function request(path, options = {}) {
@@ -285,7 +396,7 @@ async function request(path, options = {}) {
       const text = await response.text();
       responseData = text || null;
     }
-  } catch (parseError) {
+  } catch {
     responseData = null;
   }
 
@@ -327,7 +438,9 @@ const ROUTES = {
   restoreSale: (id) => `/byproducts/sales/${encodeURIComponent(id)}/restore`,
   voidSale: (id) => `/byproducts/sales/${encodeURIComponent(id)}/void`,
   saleLineById: (saleId, lineId) =>
-    `/byproducts/sales/${encodeURIComponent(saleId)}/lines/${encodeURIComponent(lineId)}`,
+    `/byproducts/sales/${encodeURIComponent(saleId)}/lines/${encodeURIComponent(
+      lineId
+    )}`,
 
   reportQuery: "/byproducts/reports/query",
   dailyReport: "/byproducts/reports/daily",
@@ -357,9 +470,51 @@ const ROUTES = {
   templatePlaceholders: (id) =>
     `/byproducts/templates/${encodeURIComponent(id)}/placeholders`,
   generateTemplateDocument: "/byproducts/templates/generate",
+  generatedDownload: "/byproducts/generated/download",
 };
 
 export const ByproductsService = {
+  getApiBaseUrl,
+
+  buildGeneratedDocumentUrl(fileName) {
+    if (!fileName) return null;
+    return makeAbsoluteApiUrl(
+      buildGeneratedDocumentFallbackDownloadUrl(String(fileName))
+    );
+  },
+
+  normalizeGeneratedDocumentMeta(meta) {
+    return normalizeGeneratedFileMeta(meta);
+  },
+
+  async openGeneratedDocument(meta, options = {}) {
+    const normalized = ensureGeneratedDocumentDownloadUrl(meta);
+    const blob = await fetchAuthorizedFileBlob(
+      normalized.download_url,
+      options.token
+    );
+
+    if (typeof window !== "undefined") {
+      openBlobInNewTab(blob);
+    }
+
+    return normalized;
+  },
+
+  async downloadGeneratedDocument(meta, options = {}) {
+    const normalized = ensureGeneratedDocumentDownloadUrl(meta);
+    const blob = await fetchAuthorizedFileBlob(
+      normalized.download_url,
+      options.token
+    );
+
+    if (typeof window !== "undefined") {
+      triggerBrowserDownload(blob, normalized.file_name);
+    }
+
+    return normalized;
+  },
+
   async createCategory(payload = {}, options = {}) {
     return request(ROUTES.categories, {
       method: "POST",

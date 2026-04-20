@@ -24,13 +24,10 @@ function coerceItems(response) {
   if (Array.isArray(response?.data?.items)) return response.data.items;
   if (Array.isArray(response?.rows)) return response.rows;
   if (Array.isArray(response?.data?.rows)) return response.data.rows;
+  if (Array.isArray(response?.points)) return response.points;
+  if (Array.isArray(response?.data?.points)) return response.data.points;
   if (Array.isArray(response?.data)) return response.data;
   return [];
-}
-
-function toNumber(value) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : 0;
 }
 
 function formatMoney(value) {
@@ -201,6 +198,12 @@ function getInitialFilters() {
 }
 
 function reportPeriodText(report, filters) {
+  const period = report?.period || report?.data?.period || null;
+
+  if (period?.date_from || period?.date_to) {
+    return `${formatValue(period.date_from)} to ${formatValue(period.date_to)}`;
+  }
+
   if (report?.report_date) {
     return formatValue(report.report_date);
   }
@@ -209,20 +212,6 @@ function reportPeriodText(report, filters) {
     return `${formatValue(report.report_date_from)} to ${formatValue(
       report.report_date_to
     )}`;
-  }
-
-  if (report?.date_from || report?.date_to) {
-    return `${formatValue(report.date_from)} to ${formatValue(report.date_to)}`;
-  }
-
-  if (report?.week_start_date || report?.week_end_date) {
-    return `${formatValue(report.week_start_date)} to ${formatValue(
-      report.week_end_date
-    )}`;
-  }
-
-  if (report?.month && report?.year) {
-    return `${formatValue(report.month)}/${formatValue(report.year)}`;
   }
 
   if (filters.report_type === "daily") {
@@ -273,23 +262,11 @@ function getTotals(report) {
 }
 
 function getSummaryList(response) {
-  if (Array.isArray(response)) return response;
-  if (Array.isArray(response?.items)) return response.items;
-  if (Array.isArray(response?.rows)) return response.rows;
-  if (Array.isArray(response?.data?.items)) return response.data.items;
-  if (Array.isArray(response?.data?.rows)) return response.data.rows;
-  if (Array.isArray(response?.data)) return response.data;
-  return [];
+  return coerceItems(response);
 }
 
 function getTrendPoints(response) {
-  if (Array.isArray(response)) return response;
-  if (Array.isArray(response?.points)) return response.points;
-  if (Array.isArray(response?.rows)) return response.rows;
-  if (Array.isArray(response?.data?.points)) return response.data.points;
-  if (Array.isArray(response?.data?.rows)) return response.data.rows;
-  if (Array.isArray(response?.data)) return response.data;
-  return [];
+  return coerceItems(response);
 }
 
 function getMainReportPayload(filters) {
@@ -362,9 +339,9 @@ function getReportFilterForGeneration(filters) {
     };
   }
 
-  if (filters.report_type === "custom") {
+  if (filters.report_type === "custom_period") {
     return {
-      report_type: "custom",
+      report_type: "custom_period",
       date_from: filters.date_from || "",
       date_to: filters.date_to || "",
       ...base,
@@ -377,72 +354,6 @@ function getReportFilterForGeneration(filters) {
     date_to: filters.date_to || "",
     ...base,
   };
-}
-
-function getApiBaseUrl() {
-  const envUrl =
-    process.env.NEXT_PUBLIC_API_BASE_URL ||
-    process.env.NEXT_PUBLIC_API_URL ||
-    process.env.NEXT_PUBLIC_BACKEND_URL;
-
-  if (envUrl && String(envUrl).trim()) {
-    return String(envUrl).trim().replace(/\/+$/, "");
-  }
-
-  return "http://127.0.0.1:8000";
-}
-
-function normalizePath(path) {
-  const raw = String(path || "").trim();
-  if (!raw) return "";
-  return raw.replace(/\\/g, "/").replace(/^\/+/, "");
-}
-
-function buildDownloadCandidates(doc) {
-  const base = getApiBaseUrl();
-  const candidates = [];
-
-  if (doc?.file_url) {
-    candidates.push(String(doc.file_url).trim());
-  }
-
-  const normalizedPath = normalizePath(
-    doc?.normalized_file_path || doc?.file_path || ""
-  );
-
-  if (normalizedPath) {
-    if (/^https?:\/\//i.test(normalizedPath)) {
-      candidates.push(normalizedPath);
-    } else {
-      candidates.push(`${base}/${normalizedPath}`);
-      if (!normalizedPath.startsWith("storage/")) {
-        candidates.push(`${base}/storage/${normalizedPath}`);
-      }
-    }
-  }
-
-  return Array.from(new Set(candidates.filter(Boolean)));
-}
-
-function openGeneratedDocument(doc) {
-  const candidates = buildDownloadCandidates(doc);
-  if (candidates.length === 0) return false;
-
-  if (typeof window !== "undefined") {
-    const link = document.createElement("a");
-    link.href = candidates[0];
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
-    if (doc?.file_name) {
-      link.download = doc.file_name;
-    }
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    return true;
-  }
-
-  return false;
 }
 
 function ReportMetricCard({ title, value, color = TEXT }) {
@@ -514,6 +425,7 @@ export default function ByproductsReportsPage() {
   const [loadingCompare, setLoadingCompare] = useState(false);
   const [generatingPdf, setGeneratingPdf] = useState(false);
   const [generatingSource, setGeneratingSource] = useState(false);
+  const [openingLastFile, setOpeningLastFile] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
@@ -567,31 +479,15 @@ export default function ByproductsReportsPage() {
 
   const mainMetricCards = useMemo(() => {
     return [
-      {
-        title: "Rows",
-        value: rows.length,
-        color: TEXT,
-      },
-      {
-        title: "Grouped",
-        value: groupedRows.length,
-        color: BLUE,
-      },
-      {
-        title: "Quantity",
-        value: formatValue(totals.total_quantity),
-        color: GREEN,
-      },
+      { title: "Rows", value: rows.length, color: TEXT },
+      { title: "Grouped", value: groupedRows.length, color: BLUE },
+      { title: "Quantity", value: formatValue(totals.total_quantity), color: GREEN },
       {
         title: "Total Amount",
         value: formatMoney(totals.total_amount),
         color: ORANGE_DEEP,
       },
-      {
-        title: "Paid",
-        value: formatMoney(totals.amount_paid),
-        color: BLUE,
-      },
+      { title: "Paid", value: formatMoney(totals.amount_paid), color: BLUE },
       {
         title: "Balance Due",
         value: formatMoney(totals.balance_due),
@@ -602,11 +498,7 @@ export default function ByproductsReportsPage() {
         value: formatValue(totals.transaction_count),
         color: TEXT,
       },
-      {
-        title: "Customers",
-        value: formatValue(totals.customer_count),
-        color: BLUE,
-      },
+      { title: "Customers", value: formatValue(totals.customer_count), color: BLUE },
     ];
   }, [rows.length, groupedRows.length, totals]);
 
@@ -671,7 +563,7 @@ export default function ByproductsReportsPage() {
           year: Number(filters.year),
           ...base,
         });
-      } else if (filters.report_type === "custom") {
+      } else if (filters.report_type === "custom_period") {
         response = await ByproductsService.getCustomPeriodReport({
           date_from: filters.date_from,
           date_to: filters.date_to,
@@ -722,20 +614,39 @@ export default function ByproductsReportsPage() {
       };
 
       const generated = await ByproductsService.generateReportDocument(payload);
-
       setLastGeneratedDocument(generated);
 
-      const opened = openGeneratedDocument(generated);
+      if (isPdf) {
+        await ByproductsService.downloadGeneratedDocument(generated);
+      } else {
+        await ByproductsService.downloadGeneratedDocument(generated);
+      }
 
-      setSuccess(
-        opened
-          ? `${generated?.file_name || "Document"} generated successfully.`
-          : `${generated?.file_name || "Document"} generated. Open it using the last generated file button if needed.`
-      );
+      setSuccess(`${generated?.file_name || "Document"} generated successfully.`);
     } catch (err) {
       setError(err?.message || "Failed to generate document.");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function handleOpenLastGeneratedFile() {
+    setError("");
+    setSuccess("");
+
+    if (!lastGeneratedDocument) {
+      setError("No generated file is available to open yet.");
+      return;
+    }
+
+    setOpeningLastFile(true);
+    try {
+      await ByproductsService.openGeneratedDocument(lastGeneratedDocument);
+      setSuccess(`${lastGeneratedDocument.file_name || "Document"} opened successfully.`);
+    } catch (err) {
+      setError(err?.message || "Failed to open the generated file.");
+    } finally {
+      setOpeningLastFile(false);
     }
   }
 
@@ -778,23 +689,23 @@ export default function ByproductsReportsPage() {
     setError("");
     setSuccess("");
 
-    const base = {
-      date_from: range.date_from,
-      date_to: range.date_to,
-      customer_id: filters.customer_id || undefined,
-      byproduct_id: filters.byproduct_id || undefined,
-      category_id: filters.category_id || undefined,
-      include_void: filters.include_void,
-      include_deleted: filters.include_deleted,
-      group_by: filters.group_by || undefined,
-      search: filters.search || undefined,
-    };
-
     try {
       const [customerResp, byproductResp, categoryResp] = await Promise.all([
-        ByproductsService.getCustomerSummary(base),
-        ByproductsService.getByproductSummary(base),
-        ByproductsService.getCategorySummary(base),
+        ByproductsService.getCustomerSummary({
+          date_from: range.date_from,
+          date_to: range.date_to,
+          customer_id: filters.customer_id || undefined,
+        }),
+        ByproductsService.getByproductSummary({
+          date_from: range.date_from,
+          date_to: range.date_to,
+          category_id: filters.category_id || undefined,
+          byproduct_id: filters.byproduct_id || undefined,
+        }),
+        ByproductsService.getCategorySummary({
+          date_from: range.date_from,
+          date_to: range.date_to,
+        }),
       ]);
 
       setCustomerSummary(getSummaryList(customerResp));
@@ -824,10 +735,14 @@ export default function ByproductsReportsPage() {
       const response = await ByproductsService.getTrendReport({
         interval:
           filters.report_type === "monthly"
-            ? "weekly"
+            ? "week"
             : filters.report_type === "weekly"
-            ? "daily"
-            : "daily",
+            ? "day"
+            : "day",
+        report_type:
+          filters.report_type === "custom_period"
+            ? "custom_period"
+            : filters.report_type,
         date_from: range.date_from,
         date_to: range.date_to,
         customer_id: filters.customer_id || undefined,
@@ -862,6 +777,10 @@ export default function ByproductsReportsPage() {
 
     try {
       const response = await ByproductsService.compareWithPreviousPeriod({
+        report_type:
+          filters.report_type === "custom_period"
+            ? "custom_period"
+            : filters.report_type,
         date_from: range.date_from,
         date_to: range.date_to,
         customer_id: filters.customer_id || undefined,
@@ -973,8 +892,8 @@ export default function ByproductsReportsPage() {
                   }}
                 >
                   Run daily, weekly, monthly, custom period, and accumulation
-                  reports. Download buttons at the top generate a document using
-                  the default template for the current report type.
+                  reports. Download buttons generate the file using the default
+                  template for the current report type.
                 </p>
               </div>
 
@@ -1068,12 +987,8 @@ export default function ByproductsReportsPage() {
 
               <button
                 type="button"
-                onClick={() => {
-                  const opened = openGeneratedDocument(lastGeneratedDocument);
-                  if (!opened) {
-                    setError("No generated file is available to open yet.");
-                  }
-                }}
+                onClick={handleOpenLastGeneratedFile}
+                disabled={openingLastFile}
                 style={{
                   minHeight: 44,
                   padding: "0 16px",
@@ -1083,11 +998,12 @@ export default function ByproductsReportsPage() {
                   color: TEXT,
                   fontSize: 14,
                   fontWeight: 800,
-                  cursor: "pointer",
+                  cursor: openingLastFile ? "not-allowed" : "pointer",
+                  opacity: openingLastFile ? 0.7 : 1,
                   width: isMobile ? "100%" : "auto",
                 }}
               >
-                Open Last Generated File
+                {openingLastFile ? "Opening..." : "Open Last Generated File"}
               </button>
             </div>
 
@@ -1255,7 +1171,7 @@ export default function ByproductsReportsPage() {
                   <option value="daily">daily</option>
                   <option value="weekly">weekly</option>
                   <option value="monthly">monthly</option>
-                  <option value="custom">custom</option>
+                  <option value="custom_period">custom period</option>
                   <option value="accumulation">accumulation</option>
                 </select>
               </div>
@@ -1333,7 +1249,7 @@ export default function ByproductsReportsPage() {
                 </>
               ) : null}
 
-              {(filters.report_type === "custom" ||
+              {(filters.report_type === "custom_period" ||
                 filters.report_type === "accumulation") ? (
                 <>
                   <div>
@@ -1447,11 +1363,12 @@ export default function ByproductsReportsPage() {
                   style={inputStyle}
                 >
                   <option value="">No grouping</option>
+                  <option value="day">day</option>
+                  <option value="week">week</option>
+                  <option value="month">month</option>
                   <option value="customer">customer</option>
                   <option value="byproduct">byproduct</option>
                   <option value="category">category</option>
-                  <option value="payment_mode">payment_mode</option>
-                  <option value="sale_date">sale_date</option>
                 </select>
               </div>
 
@@ -1465,7 +1382,7 @@ export default function ByproductsReportsPage() {
                       search: e.target.value,
                     }))
                   }
-                  placeholder="Search customer, item, remarks..."
+                  placeholder="Search customer, item, transaction..."
                   style={inputStyle}
                 />
               </div>
@@ -1768,7 +1685,7 @@ export default function ByproductsReportsPage() {
               <div style={{ display: "grid", gap: 12 }}>
                 {rows.map((row, index) => (
                   <div
-                    key={row?.id || row?.line_id || index}
+                    key={row?.id || row?.sale_line_id || index}
                     style={{
                       border: `1px solid ${BORDER}`,
                       borderRadius: 16,
@@ -1807,7 +1724,7 @@ export default function ByproductsReportsPage() {
                         </div>
                       </div>
 
-                      <StatusBadge label={`#${row?.no || index + 1}`} />
+                      <StatusBadge label={`#${index + 1}`} />
                     </div>
 
                     <div style={{ display: "grid", gap: 6, fontSize: 13, color: TEXT }}>
@@ -1871,8 +1788,8 @@ export default function ByproductsReportsPage() {
                   </thead>
                   <tbody>
                     {rows.map((row, index) => (
-                      <tr key={row?.id || row?.line_id || index}>
-                        <td style={cellStyleStrong}>{row?.no || index + 1}</td>
+                      <tr key={row?.id || row?.sale_line_id || index}>
+                        <td style={cellStyleStrong}>{index + 1}</td>
                         <td style={cellStyle}>{formatValue(row?.customer_name)}</td>
                         <td style={cellStyle}>{formatValue(row?.transaction_name)}</td>
                         <td style={cellStyle}>{formatValue(row?.byproduct_name)}</td>
@@ -1982,11 +1899,13 @@ export default function ByproductsReportsPage() {
                 >
                   <thead>
                     <tr style={{ background: "#f8fafc" }}>
-                      {["Group", "Quantity Total", "Amount Total", "Transactions"].map((head) => (
-                        <th key={head} style={tableHeadStyle}>
-                          {head}
-                        </th>
-                      ))}
+                      {["Group", "Quantity Total", "Amount Total", "Transactions"].map(
+                        (head) => (
+                          <th key={head} style={tableHeadStyle}>
+                            {head}
+                          </th>
+                        )
+                      )}
                     </tr>
                   </thead>
                   <tbody>

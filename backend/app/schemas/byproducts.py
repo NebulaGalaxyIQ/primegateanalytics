@@ -34,6 +34,18 @@ def _clean_upper_text(value: str | None) -> str | None:
     return value.upper() if value else None
 
 
+def _clean_path_text(value: str | None) -> str | None:
+    value = _clean_text(value)
+    if value is None:
+        return None
+    return value.replace("\\", "/")
+
+
+def _clean_url_text(value: str | None) -> str | None:
+    value = _clean_text(value)
+    return value
+
+
 # =============================================================================
 # BASE SCHEMA
 # =============================================================================
@@ -64,6 +76,7 @@ class AuditReadMixin(AppSchema):
     created_by_id: int | None = None
     updated_by_id: int | None = None
     deleted_by_id: int | None = None
+
 
 class MessageResponse(AppSchema):
     message: str
@@ -215,7 +228,9 @@ class ByproductItemBase(AppSchema):
             self.maximum_unit_price is not None
             and self.default_unit_price > self.maximum_unit_price
         ):
-            raise ValueError("default_unit_price cannot be greater than maximum_unit_price")
+            raise ValueError(
+                "default_unit_price cannot be greater than maximum_unit_price"
+            )
 
         return self
 
@@ -360,8 +375,14 @@ class ByproductCustomerBase(AppSchema):
 
     @model_validator(mode="after")
     def validate_credit_fields(self) -> "ByproductCustomerBase":
-        if not self.credit_allowed and self.credit_limit not in (None, Decimal("0"), Decimal("0.00")):
-            raise ValueError("credit_limit can only be set when credit_allowed is true")
+        if not self.credit_allowed and self.credit_limit not in (
+            None,
+            Decimal("0"),
+            Decimal("0.00"),
+        ):
+            raise ValueError(
+                "credit_limit can only be set when credit_allowed is true"
+            )
         return self
 
 
@@ -512,6 +533,11 @@ class ByproductSaleLineUpdate(AppSchema):
     remarks: str | None = Field(default=None, max_length=1000)
     extra_meta: dict[str, Any] | None = None
     is_active: bool | None = None
+
+    @field_validator("byproduct_name", "remarks")
+    @classmethod
+    def validate_text_fields(cls, value: str | None) -> str | None:
+        return _clean_text(value)
 
 
 class ByproductSaleLineRead(AuditReadMixin):
@@ -833,14 +859,19 @@ class ByproductReportTemplateBase(AppSchema):
 
 class ByproductReportTemplateCreate(ByproductReportTemplateBase):
     file_name: str = Field(..., min_length=1, max_length=255)
-    file_path: str = Field(..., min_length=1, max_length=500)
+    file_path: str = Field(..., min_length=1, max_length=1000)
     mime_type: str | None = Field(default=None, max_length=120)
     file_size_bytes: int | None = Field(default=None, ge=0)
 
-    @field_validator("file_name", "file_path", "mime_type")
+    @field_validator("file_name", "mime_type")
     @classmethod
     def validate_file_fields(cls, value: str | None) -> str | None:
         return _clean_text(value)
+
+    @field_validator("file_path")
+    @classmethod
+    def validate_file_path(cls, value: str | None) -> str | None:
+        return _clean_path_text(value)
 
 
 class ByproductReportTemplateUpdate(AppSchema):
@@ -851,7 +882,7 @@ class ByproductReportTemplateUpdate(AppSchema):
     template_format: ByproductTemplateFormat | None = None
 
     file_name: str | None = Field(default=None, max_length=255)
-    file_path: str | None = Field(default=None, max_length=500)
+    file_path: str | None = Field(default=None, max_length=1000)
     mime_type: str | None = Field(default=None, max_length=120)
     file_size_bytes: int | None = Field(default=None, ge=0)
 
@@ -860,10 +891,15 @@ class ByproductReportTemplateUpdate(AppSchema):
     placeholders_meta: ByproductTemplatePlaceholderMeta | None = None
     is_active: bool | None = None
 
-    @field_validator("name", "file_name", "file_path", "mime_type", "notes")
+    @field_validator("name", "file_name", "mime_type", "notes")
     @classmethod
     def validate_text_fields(cls, value: str | None) -> str | None:
         return _clean_text(value)
+
+    @field_validator("file_path")
+    @classmethod
+    def validate_file_path(cls, value: str | None) -> str | None:
+        return _clean_path_text(value)
 
     @field_validator("template_code")
     @classmethod
@@ -886,6 +922,14 @@ class ByproductReportTemplateRead(AuditReadMixin):
     is_default: bool
     notes: str | None = None
     placeholders_meta: ByproductTemplatePlaceholderMeta | None = None
+
+    @field_validator("file_path")
+    @classmethod
+    def validate_file_path(cls, value: str) -> str:
+        cleaned = _clean_path_text(value)
+        if not cleaned:
+            raise ValueError("file_path is required")
+        return cleaned
 
 
 class ByproductReportTemplateListResponse(AppSchema):
@@ -929,8 +973,27 @@ class ByproductGenerateReportDocumentRequest(AppSchema):
 class ByproductGeneratedDocumentResponse(AppSchema):
     file_name: str
     file_path: str
+    download_url: str | None = None
     mime_type: str
     size_bytes: int | None = None
+
+    @field_validator("file_name", "mime_type")
+    @classmethod
+    def validate_text_fields(cls, value: str | None) -> str | None:
+        return _clean_text(value)
+
+    @field_validator("file_path")
+    @classmethod
+    def validate_file_path(cls, value: str | None) -> str | None:
+        cleaned = _clean_path_text(value)
+        if not cleaned:
+            raise ValueError("file_path is required")
+        return cleaned
+
+    @field_validator("download_url")
+    @classmethod
+    def validate_download_url(cls, value: str | None) -> str | None:
+        return _clean_url_text(value)
 
 
 # =============================================================================

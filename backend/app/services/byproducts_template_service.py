@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
+from urllib.parse import quote
 
 from fastapi import HTTPException, UploadFile, status
 from jinja2 import BaseLoader, Environment, select_autoescape
@@ -57,8 +58,13 @@ except Exception:  # pragma: no cover
     win32_client = None
 
 
-DEFAULT_TEMPLATE_ROOT = Path("storage/byproducts/templates")
-DEFAULT_OUTPUT_ROOT = Path("storage/byproducts/generated")
+BASE_DIR = Path(__file__).resolve().parents[2]
+DEFAULT_TEMPLATE_ROOT = BASE_DIR / "storage" / "byproducts" / "templates"
+DEFAULT_OUTPUT_ROOT = BASE_DIR / "storage" / "byproducts" / "generated"
+
+# This matches the router download endpoint you should expose.
+GENERATED_DOWNLOAD_ROUTE = "/byproducts/generated/download"
+
 PLACEHOLDER_PATTERN = re.compile(r"{{\s*([a-zA-Z0-9_.\-\[\]]+)\s*}}")
 WORD_PDF_FILE_FORMAT = 17
 
@@ -108,6 +114,39 @@ def _ensure_dir(path: Path) -> Path:
     return path
 
 
+def _coerce_path(value: str | Path | None) -> Path:
+    if isinstance(value, Path):
+        return value
+    raw = str(value or "").strip()
+    return Path(raw.replace("\\", "/"))
+
+
+def _resolve_disk_path(value: str | Path | None, *, base_dir: Path = BASE_DIR) -> Path:
+    path = _coerce_path(value)
+    if path.is_absolute():
+        return path.resolve()
+    return (base_dir / path).resolve()
+
+
+def _to_storage_path_string(value: str | Path, *, base_dir: Path = BASE_DIR) -> str:
+    path = _resolve_disk_path(value, base_dir=base_dir)
+    try:
+        return path.relative_to(base_dir.resolve()).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def _delete_file_safely(path: str | Path | None) -> None:
+    if not path:
+        return
+    try:
+        resolved = _resolve_disk_path(path)
+        if resolved.exists():
+            resolved.unlink()
+    except Exception:
+        pass
+
+
 def _detect_mime_type_by_extension(path: Path) -> str:
     ext = path.suffix.lower()
     if ext == ".docx":
@@ -128,12 +167,13 @@ def _template_storage_dir(
     template_type: ByproductTemplateType,
     root: Path | None = None,
 ) -> Path:
-    root = root or DEFAULT_TEMPLATE_ROOT
-    return _ensure_dir(root / template_type.value)
+    root_path = _resolve_disk_path(root) if root else DEFAULT_TEMPLATE_ROOT
+    return _ensure_dir(root_path / template_type.value)
 
 
 def _output_storage_dir(root: Path | None = None) -> Path:
-    return _ensure_dir(root or DEFAULT_OUTPUT_ROOT)
+    root_path = _resolve_disk_path(root) if root else DEFAULT_OUTPUT_ROOT
+    return _ensure_dir(root_path)
 
 
 def _read_text_file(path: Path) -> str:
@@ -157,19 +197,22 @@ def _extract_placeholders_from_docx(path: Path) -> list[str]:
 
     placeholders: set[str] = set()
 
-    with zipfile.ZipFile(path, "r") as archive:
-        for name in archive.namelist():
-            if not name.startswith("word/") or not name.endswith(".xml"):
-                continue
-            try:
-                xml_text = archive.read(name).decode("utf-8", errors="ignore")
-            except Exception:
-                continue
+    try:
+        with zipfile.ZipFile(path, "r") as archive:
+            for name in archive.namelist():
+                if not name.startswith("word/") or not name.endswith(".xml"):
+                    continue
+                try:
+                    xml_text = archive.read(name).decode("utf-8", errors="ignore")
+                except Exception:
+                    continue
 
-            for match in PLACEHOLDER_PATTERN.findall(xml_text):
-                placeholder = match.strip()
-                if placeholder:
-                    placeholders.add(placeholder)
+                for match in PLACEHOLDER_PATTERN.findall(xml_text):
+                    placeholder = match.strip()
+                    if placeholder:
+                        placeholders.add(placeholder)
+    except zipfile.BadZipFile:
+        return []
 
     return sorted(placeholders)
 
@@ -178,7 +221,7 @@ def _extract_placeholders(
     file_path: str | Path,
     template_format: ByproductTemplateFormat,
 ) -> list[str]:
-    path = Path(file_path)
+    path = _resolve_disk_path(file_path)
     if not path.exists():
         return []
 
@@ -218,16 +261,25 @@ def _template_exists_by_code(
 
 def _template_exists_by_path(
     db: Session,
-    file_path: str,
+    file_path: str | Path,
     *,
     exclude_id: UUID | None = None,
 ) -> bool:
-    q = db.query(ByproductReportTemplate).filter(
-        ByproductReportTemplate.file_path == file_path
-    )
+    target_path = _resolve_disk_path(file_path)
+
+    q = db.query(ByproductReportTemplate)
     if exclude_id:
         q = q.filter(ByproductReportTemplate.id != exclude_id)
-    return q.first() is not None
+
+    for row in q.all():
+        try:
+            if _resolve_disk_path(row.file_path) == target_path:
+                return True
+        except Exception:
+            if row.file_path == _to_storage_path_string(target_path):
+                return True
+
+    return False
 
 
 def _get_template_or_404(
@@ -312,6 +364,28 @@ def _set_default_for_type(
     target.updated_by_id = actor_id
 
 
+def _ensure_existing_file_or_400(file_path: str | Path, *, label: str) -> Path:
+    resolved = _resolve_disk_path(file_path)
+    if not resolved.exists():
+        raise _http_400(f"{label} does not exist on disk: {resolved}")
+    return resolved
+
+
+def _build_generated_download_url(file_name: str) -> str:
+    return f"{GENERATED_DOWNLOAD_ROUTE}?file_name={quote(file_name)}"
+
+
+def _build_generated_response(path: Path) -> ByproductGeneratedDocumentResponse:
+    resolved = path.resolve()
+    return ByproductGeneratedDocumentResponse(
+        file_name=resolved.name,
+        file_path=_to_storage_path_string(resolved),
+        download_url=_build_generated_download_url(resolved.name),
+        mime_type=_detect_mime_type_by_extension(resolved),
+        size_bytes=resolved.stat().st_size if resolved.exists() else None,
+    )
+
+
 # =============================================================================
 # FILE STORAGE HELPERS
 # =============================================================================
@@ -339,12 +413,18 @@ def save_uploaded_template_file(
     stored_name = f"{uuid4().hex}-{_slugify(Path(upload.filename).stem)}{extension}"
     stored_path = target_dir / stored_name
 
+    try:
+        if hasattr(upload.file, "seek"):
+            upload.file.seek(0)
+    except Exception:
+        pass
+
     with stored_path.open("wb") as output_stream:
         shutil.copyfileobj(upload.file, output_stream)
 
     return {
         "file_name": upload.filename,
-        "file_path": str(stored_path),
+        "file_path": _to_storage_path_string(stored_path),
         "mime_type": upload.content_type or _detect_mime_type_by_extension(stored_path),
         "file_size_bytes": stored_path.stat().st_size,
         "placeholders_meta": _build_placeholder_meta(stored_path, template_format),
@@ -373,17 +453,16 @@ def create_template(
     if not file_path:
         raise _http_400("file_path is required")
 
-    path_obj = Path(file_path)
-    if not path_obj.exists():
-        raise _http_400("Template file_path does not exist on disk")
+    resolved_path = _ensure_existing_file_or_400(file_path, label="Template file_path")
+    normalized_file_path = _to_storage_path_string(resolved_path)
 
-    if _template_exists_by_path(db, file_path):
+    if _template_exists_by_path(db, normalized_file_path):
         raise _http_409("A byproducts template with this file path already exists")
 
     placeholders_meta = (
         payload.placeholders_meta.model_dump()
         if payload.placeholders_meta is not None
-        else _build_placeholder_meta(file_path, payload.template_format)
+        else _build_placeholder_meta(resolved_path, payload.template_format)
     )
 
     obj = ByproductReportTemplate(
@@ -392,9 +471,9 @@ def create_template(
         template_type=payload.template_type,
         template_format=payload.template_format,
         file_name=payload.file_name,
-        file_path=file_path,
-        mime_type=payload.mime_type or _detect_mime_type_by_extension(path_obj),
-        file_size_bytes=payload.file_size_bytes or path_obj.stat().st_size,
+        file_path=normalized_file_path,
+        mime_type=payload.mime_type or _detect_mime_type_by_extension(resolved_path),
+        file_size_bytes=payload.file_size_bytes or resolved_path.stat().st_size,
         is_default=payload.is_default,
         placeholders_meta=placeholders_meta,
         notes=payload.notes,
@@ -449,7 +528,12 @@ def create_template_from_upload(
         notes=notes,
         is_active=is_active,
     )
-    return create_template(db, payload, actor_id=actor_id)
+
+    try:
+        return create_template(db, payload, actor_id=actor_id)
+    except Exception:
+        _delete_file_safely(saved["file_path"])
+        raise
 
 
 def get_template(db: Session, template_id: UUID) -> ByproductReportTemplateRead:
@@ -547,19 +631,30 @@ def update_template(
         file_path = _normalize_text(payload.file_path)
         if not file_path:
             raise _http_400("file_path cannot be empty")
-        if not Path(file_path).exists():
-            raise _http_400("Updated file_path does not exist on disk")
-        if file_path != obj.file_path and _template_exists_by_path(
+
+        resolved_path = _ensure_existing_file_or_400(file_path, label="Updated file_path")
+        normalized_file_path = _to_storage_path_string(resolved_path)
+
+        if normalized_file_path != obj.file_path and _template_exists_by_path(
             db,
-            file_path,
+            normalized_file_path,
             exclude_id=obj.id,
         ):
             raise _http_409("Another byproducts template already uses this file_path")
 
-        obj.file_path = file_path
-        obj.placeholders_meta = _build_placeholder_meta(file_path, obj.template_format)
-        obj.file_size_bytes = Path(file_path).stat().st_size
-        obj.mime_type = _detect_mime_type_by_extension(Path(file_path))
+        obj.file_path = normalized_file_path
+        obj.placeholders_meta = _build_placeholder_meta(resolved_path, obj.template_format)
+        obj.file_size_bytes = resolved_path.stat().st_size
+        obj.mime_type = _detect_mime_type_by_extension(resolved_path)
+
+    elif payload.template_format is not None and obj.file_path:
+        existing_path = _ensure_existing_file_or_400(
+            obj.file_path,
+            label="Template file_path",
+        )
+        obj.placeholders_meta = _build_placeholder_meta(existing_path, obj.template_format)
+        obj.file_size_bytes = existing_path.stat().st_size
+        obj.mime_type = _detect_mime_type_by_extension(existing_path)
 
     if payload.mime_type is not None:
         obj.mime_type = payload.mime_type
@@ -605,23 +700,24 @@ def replace_template_file(
         storage_root=storage_root,
     )
 
-    old_path = Path(obj.file_path)
-
-    obj.file_name = saved["file_name"]
-    obj.file_path = saved["file_path"]
-    obj.mime_type = saved["mime_type"]
-    obj.file_size_bytes = saved["file_size_bytes"]
-    obj.placeholders_meta = saved["placeholders_meta"]
-
-    _apply_update_audit(obj, actor_id)
-    db.commit()
-    db.refresh(obj)
+    old_path = obj.file_path
 
     try:
-        if old_path.exists() and old_path != Path(obj.file_path):
-            old_path.unlink()
+        obj.file_name = saved["file_name"]
+        obj.file_path = saved["file_path"]
+        obj.mime_type = saved["mime_type"]
+        obj.file_size_bytes = saved["file_size_bytes"]
+        obj.placeholders_meta = saved["placeholders_meta"]
+
+        _apply_update_audit(obj, actor_id)
+        db.commit()
+        db.refresh(obj)
     except Exception:
-        pass
+        _delete_file_safely(saved["file_path"])
+        raise
+
+    if old_path and old_path != obj.file_path:
+        _delete_file_safely(old_path)
 
     return _serialize_template(obj)
 
@@ -634,18 +730,14 @@ def delete_template(
     delete_file_from_disk: bool = False,
 ) -> MessageResponse:
     obj = _get_template_or_404(db, template_id)
-    file_path = Path(obj.file_path)
+    file_path = obj.file_path
 
     _apply_soft_delete(obj, actor_id)
     obj.is_default = False
     db.commit()
 
     if delete_file_from_disk:
-        try:
-            if file_path.exists():
-                file_path.unlink()
-        except Exception:
-            pass
+        _delete_file_safely(file_path)
 
     return MessageResponse(message="Byproducts report template deleted successfully")
 
@@ -686,13 +778,11 @@ def refresh_template_placeholders(
     actor_id: UUID | None = None,
 ) -> ByproductReportTemplateRead:
     obj = _get_template_or_404(db, template_id)
+    file_path = _ensure_existing_file_or_400(obj.file_path, label="Template file")
 
-    if not Path(obj.file_path).exists():
-        raise _http_400("Template file no longer exists on disk")
-
-    obj.placeholders_meta = _build_placeholder_meta(obj.file_path, obj.template_format)
-    obj.file_size_bytes = Path(obj.file_path).stat().st_size
-    obj.mime_type = _detect_mime_type_by_extension(Path(obj.file_path))
+    obj.placeholders_meta = _build_placeholder_meta(file_path, obj.template_format)
+    obj.file_size_bytes = file_path.stat().st_size
+    obj.mime_type = _detect_mime_type_by_extension(file_path)
     _apply_update_audit(obj, actor_id)
 
     db.commit()
@@ -843,9 +933,10 @@ def _render_docx_template(
             "DOCX template rendering requires 'docxtpl'. Install it before rendering DOCX templates."
         )
 
-    doc = DocxTemplate(str(template_path))
+    _ensure_dir(output_path.parent)
+    doc = DocxTemplate(str(template_path.resolve()))
     doc.render(context)
-    doc.save(str(output_path))
+    doc.save(str(output_path.resolve()))
 
 
 def _render_html_template(
@@ -862,6 +953,8 @@ def _render_html_template(
     )
     template = env.from_string(text)
     rendered = template.render(**context)
+
+    _ensure_dir(output_path.parent)
     output_path.write_text(rendered, encoding="utf-8")
 
 
@@ -871,7 +964,8 @@ def _render_pdf_from_html(html_path: Path, pdf_path: Path) -> None:
             "PDF generation from HTML requires 'weasyprint'. Install it before generating PDF output."
         )
 
-    HTML(filename=str(html_path)).write_pdf(str(pdf_path))
+    _ensure_dir(pdf_path.parent)
+    HTML(filename=str(html_path.resolve())).write_pdf(str(pdf_path.resolve()))
 
 
 # =============================================================================
@@ -931,25 +1025,30 @@ def _find_libreoffice_binary() -> str | None:
 def _convert_docx_to_pdf_via_docx2pdf(
     rendered_docx_path: Path,
     output_pdf_path: Path,
-) -> bool:
+) -> tuple[bool, str]:
     if docx2pdf_convert is None:
-        return False
+        return False, "docx2pdf is not installed in the active Python environment."
 
     try:
-        docx2pdf_convert(str(rendered_docx_path.resolve()), str(output_pdf_path.resolve()))
-        return output_pdf_path.exists()
-    except Exception:
-        return False
+        docx2pdf_convert(
+            str(rendered_docx_path.resolve()),
+            str(output_pdf_path.resolve()),
+        )
+        if output_pdf_path.exists():
+            return True, ""
+        return False, "docx2pdf completed but did not create the PDF file."
+    except Exception as exc:
+        return False, f"docx2pdf failed: {exc}"
 
 
 def _convert_docx_to_pdf_via_word_com(
     rendered_docx_path: Path,
     output_pdf_path: Path,
-) -> bool:
+) -> tuple[bool, str]:
     if platform.system().lower() != "windows":
-        return False
+        return False, "Microsoft Word COM conversion is only available on Windows."
     if win32_client is None:
-        return False
+        return False, "pywin32 / win32com is not available in the active Python environment."
 
     word = None
     document = None
@@ -970,8 +1069,10 @@ def _convert_docx_to_pdf_via_word_com(
         word.Quit()
         word = None
 
-        return output_pdf_path.exists()
-    except Exception:
+        if output_pdf_path.exists():
+            return True, ""
+        return False, "Microsoft Word opened the DOCX but did not create the PDF file."
+    except Exception as exc:
         try:
             if document is not None:
                 document.Close(False)
@@ -984,7 +1085,7 @@ def _convert_docx_to_pdf_via_word_com(
         except Exception:
             pass
 
-        return False
+        return False, f"Microsoft Word COM conversion failed: {exc}"
     finally:
         if pythoncom is not None:
             try:
@@ -996,10 +1097,10 @@ def _convert_docx_to_pdf_via_word_com(
 def _convert_docx_to_pdf_via_libreoffice(
     rendered_docx_path: Path,
     output_pdf_path: Path,
-) -> bool:
+) -> tuple[bool, str]:
     soffice_bin = _find_libreoffice_binary()
     if not soffice_bin:
-        return False
+        return False, "LibreOffice / soffice was not found on this machine."
 
     temp_profile_dir = Path(tempfile.mkdtemp(prefix="lo-profile-"))
     expected_pdf = output_pdf_path.parent / f"{rendered_docx_path.stem}.pdf"
@@ -1024,35 +1125,53 @@ def _convert_docx_to_pdf_via_libreoffice(
         )
 
         if result.returncode != 0:
-            return False
+            error_text = (result.stderr or result.stdout or "").strip()
+            return False, (
+                f"LibreOffice conversion failed: "
+                f"{error_text or f'process exited with code {result.returncode}'}"
+            )
 
-        if expected_pdf.exists():
-            if expected_pdf != output_pdf_path:
-                if output_pdf_path.exists():
-                    output_pdf_path.unlink()
-                expected_pdf.replace(output_pdf_path)
-            return output_pdf_path.exists()
+        if expected_pdf.exists() and expected_pdf != output_pdf_path:
+            if output_pdf_path.exists():
+                output_pdf_path.unlink()
+            expected_pdf.replace(output_pdf_path)
 
-        return output_pdf_path.exists()
-    except Exception:
-        return False
+        if output_pdf_path.exists():
+            return True, ""
+
+        return False, "LibreOffice finished but did not create the expected PDF file."
+    except Exception as exc:
+        return False, f"LibreOffice conversion failed: {exc}"
     finally:
         shutil.rmtree(temp_profile_dir, ignore_errors=True)
 
 
-def _convert_docx_to_pdf(
-    rendered_docx_path: Path,
-    output_pdf_path: Path,
-) -> None:
+def _convert_docx_to_pdf(rendered_docx_path: Path, output_pdf_path: Path) -> None:
+    rendered_docx_path = rendered_docx_path.resolve()
+    output_pdf_path = output_pdf_path.resolve()
+
+    if not rendered_docx_path.exists():
+        raise _http_400(
+            f"Rendered DOCX file does not exist on disk: {rendered_docx_path}"
+        )
+
     attempts = [
         _convert_docx_to_pdf_via_docx2pdf,
         _convert_docx_to_pdf_via_word_com,
         _convert_docx_to_pdf_via_libreoffice,
     ]
 
+    errors: list[str] = []
+
     for converter in attempts:
-        if converter(rendered_docx_path, output_pdf_path):
+        success, message = converter(rendered_docx_path, output_pdf_path)
+        if success:
             return
+        if message:
+            errors.append(message)
+
+    if errors:
+        raise _http_400("DOCX to PDF conversion failed. " + " | ".join(errors))
 
     raise _http_400(
         "DOCX to PDF conversion is not available on this server. "
@@ -1086,9 +1205,7 @@ def _resolve_template_for_render(
     if template.is_deleted or not template.is_active:
         raise _http_400("Selected byproducts report template is inactive or deleted")
 
-    if not Path(template.file_path).exists():
-        raise _http_400("Selected template file does not exist on disk")
-
+    _ensure_existing_file_or_400(template.file_path, label="Selected template file")
     return template
 
 
@@ -1119,20 +1236,18 @@ def generate_report_document(
         report_title=report_title or template.name,
     )
 
-    template_path = Path(template.file_path)
-    output_format = request.output_format.lower()
+    template_path = _ensure_existing_file_or_400(
+        template.file_path,
+        label="Selected template file",
+    )
+    output_format = request.output_format.lower().strip()
     base_name = f"{template.name}-{context.get('report_type', 'report')}"
 
     if template.template_format == ByproductTemplateFormat.DOCX:
         if output_format == "docx":
             output_path = output_root / _safe_output_name(base_name, "docx")
             _render_docx_template(template_path, output_path, context)
-            return ByproductGeneratedDocumentResponse(
-                file_name=output_path.name,
-                file_path=str(output_path),
-                mime_type=_detect_mime_type_by_extension(output_path),
-                size_bytes=output_path.stat().st_size,
-            )
+            return _build_generated_response(output_path)
 
         if output_format == "pdf":
             rendered_docx_path = output_root / _safe_output_name(base_name, "docx")
@@ -1143,18 +1258,9 @@ def generate_report_document(
             try:
                 _convert_docx_to_pdf(rendered_docx_path, output_pdf_path)
             finally:
-                try:
-                    if rendered_docx_path.exists():
-                        rendered_docx_path.unlink()
-                except Exception:
-                    pass
+                _delete_file_safely(rendered_docx_path)
 
-            return ByproductGeneratedDocumentResponse(
-                file_name=output_pdf_path.name,
-                file_path=str(output_pdf_path),
-                mime_type=_detect_mime_type_by_extension(output_pdf_path),
-                size_bytes=output_pdf_path.stat().st_size,
-            )
+            return _build_generated_response(output_pdf_path)
 
         raise _http_400("DOCX templates support output_format 'docx' and 'pdf' only")
 
@@ -1163,22 +1269,16 @@ def generate_report_document(
         _render_html_template(template_path, rendered_html_path, context)
 
         if output_format == "html":
-            return ByproductGeneratedDocumentResponse(
-                file_name=rendered_html_path.name,
-                file_path=str(rendered_html_path),
-                mime_type=_detect_mime_type_by_extension(rendered_html_path),
-                size_bytes=rendered_html_path.stat().st_size,
-            )
+            return _build_generated_response(rendered_html_path)
 
         if output_format == "pdf":
             output_pdf_path = output_root / _safe_output_name(base_name, "pdf")
-            _render_pdf_from_html(rendered_html_path, output_pdf_path)
-            return ByproductGeneratedDocumentResponse(
-                file_name=output_pdf_path.name,
-                file_path=str(output_pdf_path),
-                mime_type=_detect_mime_type_by_extension(output_pdf_path),
-                size_bytes=output_pdf_path.stat().st_size,
-            )
+            try:
+                _render_pdf_from_html(rendered_html_path, output_pdf_path)
+            finally:
+                _delete_file_safely(rendered_html_path)
+
+            return _build_generated_response(output_pdf_path)
 
         raise _http_400("HTML templates support output_format 'html' and 'pdf' only")
 
@@ -1207,16 +1307,11 @@ def get_default_template_for_type(
     return _serialize_template(obj) if obj else None
 
 
-def preview_template_placeholders(
-    db: Session,
-    template_id: UUID,
-) -> dict[str, Any]:
+def preview_template_placeholders(db: Session, template_id: UUID) -> dict[str, Any]:
     obj = _get_template_or_404(db, template_id)
+    file_path = _ensure_existing_file_or_400(obj.file_path, label="Template file")
 
-    if not Path(obj.file_path).exists():
-        raise _http_400("Template file does not exist on disk")
-
-    placeholders_meta = _build_placeholder_meta(obj.file_path, obj.template_format)
+    placeholders_meta = _build_placeholder_meta(file_path, obj.template_format)
     placeholders = placeholders_meta.get("placeholders", [])
 
     return {
