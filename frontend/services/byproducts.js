@@ -2,6 +2,22 @@ import { getToken } from "./auth";
 
 /* ============================================================================
    Byproducts Service
+   - Refactored into grouped API sections
+   - Keeps backward-compatible top-level methods
+   - Supports DB-backed templates (storage_backend, nullable file_path)
+============================================================================ */
+
+const DATE_KEYS = new Set([
+  "report_date",
+  "target_date",
+  "date_from",
+  "date_to",
+  "sale_date_from",
+  "sale_date_to",
+]);
+
+/* ============================================================================
+   Core helpers
 ============================================================================ */
 
 function isPlainObject(value) {
@@ -130,38 +146,41 @@ function requireId(id, label = "id") {
   return id;
 }
 
-function normalizeReportFilterPayload(payload = {}) {
-  const body = { ...(payload || {}) };
-
-  [
-    "report_date",
-    "target_date",
-    "date_from",
-    "date_to",
-    "sale_date_from",
-    "sale_date_to",
-  ].forEach((key) => {
-    if (body[key] !== undefined) {
-      body[key] = toIsoDate(body[key]);
-    }
-  });
-
-  if (isPlainObject(body.report_filter)) {
-    body.report_filter = normalizeReportFilterPayload(body.report_filter);
+function normalizeDateFields(value) {
+  if (Array.isArray(value)) {
+    return value.map(normalizeDateFields);
   }
 
-  return stripUndefined(body);
+  if (!isPlainObject(value)) {
+    return value;
+  }
+
+  const out = {};
+  Object.entries(value).forEach(([key, val]) => {
+    if (DATE_KEYS.has(key)) {
+      out[key] = toIsoDate(val);
+      return;
+    }
+
+    if (isPlainObject(val) || Array.isArray(val)) {
+      out[key] = normalizeDateFields(val);
+      return;
+    }
+
+    out[key] = val;
+  });
+
+  return stripUndefined(out);
 }
 
 function buildTemplateUploadFormData(payload = {}) {
-  const form = new FormData();
-
   if (!payload?.file) throw new Error("file is required");
   if (!payload?.name) throw new Error("name is required");
   if (!payload?.template_code) throw new Error("template_code is required");
   if (!payload?.template_type) throw new Error("template_type is required");
   if (!payload?.template_format) throw new Error("template_format is required");
 
+  const form = new FormData();
   form.append("name", String(payload.name));
   form.append("template_code", String(payload.template_code));
   form.append("template_type", String(payload.template_type));
@@ -178,14 +197,16 @@ function buildTemplateUploadFormData(payload = {}) {
 }
 
 function buildReplaceTemplateFileFormData(file) {
-  if (!file) {
-    throw new Error("file is required");
-  }
+  if (!file) throw new Error("file is required");
 
   const form = new FormData();
   form.append("file", file);
   return form;
 }
+
+/* ============================================================================
+   URL helpers
+============================================================================ */
 
 function getApiBaseUrl() {
   const envUrl =
@@ -211,13 +232,11 @@ function makeAbsoluteApiUrl(value) {
   return `${getApiBaseUrl()}${text.startsWith("/") ? text : `/${text}`}`;
 }
 
-function buildGeneratedDocumentFallbackDownloadUrl(fileName) {
-  const clean = typeof fileName === "string" ? fileName.trim() : "";
-  if (!clean) return null;
-  return `${ROUTES.generatedDownload}${buildQueryString({ file_name: clean })}`;
-}
+/* ============================================================================
+   Response normalizers
+============================================================================ */
 
-function normalizeGeneratedFileMeta(payload) {
+function normalizeGeneratedDocumentMeta(payload) {
   const data = unwrapData(payload);
   if (!isPlainObject(data)) return data;
 
@@ -229,7 +248,9 @@ function normalizeGeneratedFileMeta(payload) {
   const relativeDownloadUrl =
     typeof data.download_url === "string" && data.download_url.trim()
       ? data.download_url.trim()
-      : buildGeneratedDocumentFallbackDownloadUrl(data.file_name);
+      : buildQueryString({ file_name: data.file_name })
+      ? `${ROUTES.generated.download}${buildQueryString({ file_name: data.file_name })}`
+      : null;
 
   const absoluteDownloadUrl = makeAbsoluteApiUrl(relativeDownloadUrl);
 
@@ -243,7 +264,7 @@ function normalizeGeneratedFileMeta(payload) {
 }
 
 function ensureGeneratedDocumentDownloadUrl(meta) {
-  const normalized = normalizeGeneratedFileMeta(meta);
+  const normalized = normalizeGeneratedDocumentMeta(meta);
   const url =
     normalized && typeof normalized.download_url === "string"
       ? normalized.download_url.trim()
@@ -257,6 +278,49 @@ function ensureGeneratedDocumentDownloadUrl(meta) {
 
   return normalized;
 }
+
+function normalizeTemplateMeta(payload) {
+  const data = unwrapData(payload);
+  if (!isPlainObject(data)) return data;
+
+  const storageBackend =
+    typeof data.storage_backend === "string"
+      ? data.storage_backend.trim().toLowerCase()
+      : data.storage_backend || null;
+
+  const normalizedFilePath =
+    typeof data.file_path === "string"
+      ? data.file_path.replace(/\\/g, "/")
+      : data.file_path || null;
+
+  const isDatabaseBacked = storageBackend === "database";
+  const isDiskBacked = storageBackend === "disk";
+
+  return {
+    ...data,
+    storage_backend: storageBackend,
+    normalized_file_path: normalizedFilePath,
+    is_database_backed: isDatabaseBacked,
+    is_disk_backed: isDiskBacked,
+    storage_label: isDatabaseBacked
+      ? "Stored in database"
+      : normalizedFilePath || "Stored on disk",
+  };
+}
+
+function normalizeTemplateList(payload) {
+  const data = unwrapData(payload);
+  if (!isPlainObject(data)) return data;
+
+  return {
+    ...data,
+    items: Array.isArray(data.items) ? data.items.map(normalizeTemplateMeta) : [],
+  };
+}
+
+/* ============================================================================
+   Browser file helpers
+============================================================================ */
 
 async function fetchAuthorizedFileBlob(url, token) {
   const authToken = sanitizeToken(token !== undefined ? token : getToken?.());
@@ -332,6 +396,10 @@ function openBlobInNewTab(blob) {
   }, 60000);
 }
 
+/* ============================================================================
+   HTTP client
+============================================================================ */
+
 async function request(path, options = {}) {
   const {
     method = "GET",
@@ -358,7 +426,7 @@ async function request(path, options = {}) {
     finalHeaders.Authorization = `Bearer ${authToken}`;
   }
 
-  if (!isFormData) {
+  if (!isFormData && !finalHeaders["Content-Type"] && !finalHeaders["content-type"]) {
     finalHeaders["Content-Type"] = "application/json";
   }
 
@@ -415,84 +483,102 @@ async function request(path, options = {}) {
   return responseData;
 }
 
+/* ============================================================================
+   Routes grouped by domain
+============================================================================ */
+
 const ROUTES = {
-  categories: "/byproducts/categories",
-  categorySelection: "/byproducts/categories/selection",
-  categoryById: (id) => `/byproducts/categories/${encodeURIComponent(id)}`,
-  restoreCategory: (id) =>
-    `/byproducts/categories/${encodeURIComponent(id)}/restore`,
+  categories: {
+    root: "/byproducts/categories",
+    selection: "/byproducts/categories/selection",
+    byId: (id) => `/byproducts/categories/${encodeURIComponent(id)}`,
+    restore: (id) => `/byproducts/categories/${encodeURIComponent(id)}/restore`,
+  },
 
-  items: "/byproducts/items",
-  itemSelection: "/byproducts/items/selection",
-  itemById: (id) => `/byproducts/items/${encodeURIComponent(id)}`,
-  restoreItem: (id) => `/byproducts/items/${encodeURIComponent(id)}/restore`,
+  items: {
+    root: "/byproducts/items",
+    selection: "/byproducts/items/selection",
+    byId: (id) => `/byproducts/items/${encodeURIComponent(id)}`,
+    restore: (id) => `/byproducts/items/${encodeURIComponent(id)}/restore`,
+  },
 
-  customers: "/byproducts/customers",
-  customerSelection: "/byproducts/customers/selection",
-  customerById: (id) => `/byproducts/customers/${encodeURIComponent(id)}`,
-  restoreCustomer: (id) =>
-    `/byproducts/customers/${encodeURIComponent(id)}/restore`,
+  customers: {
+    root: "/byproducts/customers",
+    selection: "/byproducts/customers/selection",
+    byId: (id) => `/byproducts/customers/${encodeURIComponent(id)}`,
+    restore: (id) => `/byproducts/customers/${encodeURIComponent(id)}/restore`,
+  },
 
-  sales: "/byproducts/sales",
-  saleById: (id) => `/byproducts/sales/${encodeURIComponent(id)}`,
-  restoreSale: (id) => `/byproducts/sales/${encodeURIComponent(id)}/restore`,
-  voidSale: (id) => `/byproducts/sales/${encodeURIComponent(id)}/void`,
-  saleLineById: (saleId, lineId) =>
-    `/byproducts/sales/${encodeURIComponent(saleId)}/lines/${encodeURIComponent(
-      lineId
-    )}`,
+  sales: {
+    root: "/byproducts/sales",
+    byId: (id) => `/byproducts/sales/${encodeURIComponent(id)}`,
+    restore: (id) => `/byproducts/sales/${encodeURIComponent(id)}/restore`,
+    void: (id) => `/byproducts/sales/${encodeURIComponent(id)}/void`,
+    lineById: (saleId, lineId) =>
+      `/byproducts/sales/${encodeURIComponent(saleId)}/lines/${encodeURIComponent(
+        lineId
+      )}`,
+  },
 
-  reportQuery: "/byproducts/reports/query",
-  dailyReport: "/byproducts/reports/daily",
-  weeklyReport: "/byproducts/reports/weekly",
-  monthlyReport: "/byproducts/reports/monthly",
-  customReport: "/byproducts/reports/custom",
-  accumulationReport: "/byproducts/reports/accumulation",
-  trendReport: "/byproducts/reports/trend",
-  compareReport: "/byproducts/reports/compare",
-  dashboardReport: "/byproducts/reports/dashboard",
-  customerSummary: "/byproducts/reports/summaries/customers",
-  byproductSummary: "/byproducts/reports/summaries/byproducts",
-  categorySummary: "/byproducts/reports/summaries/categories",
+  reports: {
+    query: "/byproducts/reports/query",
+    daily: "/byproducts/reports/daily",
+    weekly: "/byproducts/reports/weekly",
+    monthly: "/byproducts/reports/monthly",
+    custom: "/byproducts/reports/custom",
+    accumulation: "/byproducts/reports/accumulation",
+    trend: "/byproducts/reports/trend",
+    compare: "/byproducts/reports/compare",
+    dashboard: "/byproducts/reports/dashboard",
+    summaries: {
+      customers: "/byproducts/reports/summaries/customers",
+      byproducts: "/byproducts/reports/summaries/byproducts",
+      categories: "/byproducts/reports/summaries/categories",
+    },
+  },
 
-  templates: "/byproducts/templates",
-  uploadTemplate: "/byproducts/templates/upload",
-  defaultTemplate: "/byproducts/templates/default",
-  templateById: (id) => `/byproducts/templates/${encodeURIComponent(id)}`,
-  replaceTemplateFile: (id) =>
-    `/byproducts/templates/${encodeURIComponent(id)}/replace-file`,
-  restoreTemplate: (id) =>
-    `/byproducts/templates/${encodeURIComponent(id)}/restore`,
-  setDefaultTemplate: (id) =>
-    `/byproducts/templates/${encodeURIComponent(id)}/set-default`,
-  refreshTemplatePlaceholders: (id) =>
-    `/byproducts/templates/${encodeURIComponent(id)}/refresh-placeholders`,
-  templatePlaceholders: (id) =>
-    `/byproducts/templates/${encodeURIComponent(id)}/placeholders`,
-  generateTemplateDocument: "/byproducts/templates/generate",
-  generatedDownload: "/byproducts/generated/download",
+  templates: {
+    root: "/byproducts/templates",
+    upload: "/byproducts/templates/upload",
+    default: "/byproducts/templates/default",
+    generate: "/byproducts/templates/generate",
+    byId: (id) => `/byproducts/templates/${encodeURIComponent(id)}`,
+    replaceFile: (id) =>
+      `/byproducts/templates/${encodeURIComponent(id)}/replace-file`,
+    restore: (id) => `/byproducts/templates/${encodeURIComponent(id)}/restore`,
+    setDefault: (id) =>
+      `/byproducts/templates/${encodeURIComponent(id)}/set-default`,
+    refreshPlaceholders: (id) =>
+      `/byproducts/templates/${encodeURIComponent(id)}/refresh-placeholders`,
+    placeholders: (id) =>
+      `/byproducts/templates/${encodeURIComponent(id)}/placeholders`,
+  },
+
+  generated: {
+    download: "/byproducts/generated/download",
+  },
 };
 
-export const ByproductsService = {
-  getApiBaseUrl,
+/* ============================================================================
+   Domain APIs
+============================================================================ */
 
-  buildGeneratedDocumentUrl(fileName) {
-    if (!fileName) return null;
+const generatedApi = {
+  buildDocumentUrl(fileName) {
+    const clean = typeof fileName === "string" ? fileName.trim() : "";
+    if (!clean) return null;
     return makeAbsoluteApiUrl(
-      buildGeneratedDocumentFallbackDownloadUrl(String(fileName))
+      `${ROUTES.generated.download}${buildQueryString({ file_name: clean })}`
     );
   },
 
-  normalizeGeneratedDocumentMeta(meta) {
-    return normalizeGeneratedFileMeta(meta);
+  normalizeDocumentMeta(meta) {
+    return normalizeGeneratedDocumentMeta(meta);
   },
 
-  async openGeneratedDocument(meta, options = {}) {
+  async openDocument(meta, options = {}) {
     const normalized = ensureGeneratedDocumentDownloadUrl(meta);
-    const blob = await fetchAuthorizedFileBlob(
-      normalized.download_url,
-      options.token
-    );
+    const blob = await fetchAuthorizedFileBlob(normalized.download_url, options.token);
 
     if (typeof window !== "undefined") {
       openBlobInNewTab(blob);
@@ -501,12 +587,9 @@ export const ByproductsService = {
     return normalized;
   },
 
-  async downloadGeneratedDocument(meta, options = {}) {
+  async downloadDocument(meta, options = {}) {
     const normalized = ensureGeneratedDocumentDownloadUrl(meta);
-    const blob = await fetchAuthorizedFileBlob(
-      normalized.download_url,
-      options.token
-    );
+    const blob = await fetchAuthorizedFileBlob(normalized.download_url, options.token);
 
     if (typeof window !== "undefined") {
       triggerBrowserDownload(blob, normalized.file_name);
@@ -514,449 +597,752 @@ export const ByproductsService = {
 
     return normalized;
   },
+};
 
-  async createCategory(payload = {}, options = {}) {
-    return request(ROUTES.categories, {
+const categoriesApi = {
+  create(payload = {}, options = {}) {
+    return request(ROUTES.categories.root, {
       method: "POST",
       body: payload,
       ...options,
     });
   },
 
-  async listCategories(params = {}, options = {}) {
-    return request(ROUTES.categories, {
+  list(params = {}, options = {}) {
+    return request(ROUTES.categories.root, {
       method: "GET",
       query: params,
       ...options,
     });
   },
 
-  async getCategorySelection(options = {}) {
-    return request(ROUTES.categorySelection, {
+  getSelection(options = {}) {
+    return request(ROUTES.categories.selection, {
       method: "GET",
       ...options,
     });
   },
 
-  async getCategory(categoryId, options = {}) {
-    return request(ROUTES.categoryById(requireId(categoryId, "categoryId")), {
+  get(categoryId, options = {}) {
+    return request(ROUTES.categories.byId(requireId(categoryId, "categoryId")), {
       method: "GET",
       ...options,
     });
   },
 
-  async updateCategory(categoryId, payload = {}, options = {}) {
-    return request(ROUTES.categoryById(requireId(categoryId, "categoryId")), {
+  update(categoryId, payload = {}, options = {}) {
+    return request(ROUTES.categories.byId(requireId(categoryId, "categoryId")), {
       method: "PUT",
       body: payload,
       ...options,
     });
   },
 
-  async deleteCategory(categoryId, options = {}) {
-    return request(ROUTES.categoryById(requireId(categoryId, "categoryId")), {
+  delete(categoryId, options = {}) {
+    return request(ROUTES.categories.byId(requireId(categoryId, "categoryId")), {
       method: "DELETE",
       ...options,
     });
   },
 
-  async restoreCategory(categoryId, options = {}) {
-    return request(ROUTES.restoreCategory(requireId(categoryId, "categoryId")), {
+  restore(categoryId, options = {}) {
+    return request(ROUTES.categories.restore(requireId(categoryId, "categoryId")), {
       method: "POST",
       ...options,
     });
   },
+};
 
-  async createItem(payload = {}, options = {}) {
-    return request(ROUTES.items, {
+const itemsApi = {
+  create(payload = {}, options = {}) {
+    return request(ROUTES.items.root, {
       method: "POST",
       body: payload,
       ...options,
     });
   },
 
-  async listItems(params = {}, options = {}) {
-    return request(ROUTES.items, {
+  list(params = {}, options = {}) {
+    return request(ROUTES.items.root, {
       method: "GET",
       query: params,
       ...options,
     });
   },
 
-  async getItemSelection(options = {}) {
-    return request(ROUTES.itemSelection, {
+  getSelection(options = {}) {
+    return request(ROUTES.items.selection, {
       method: "GET",
       ...options,
     });
   },
 
-  async getItem(itemId, options = {}) {
-    return request(ROUTES.itemById(requireId(itemId, "itemId")), {
+  get(itemId, options = {}) {
+    return request(ROUTES.items.byId(requireId(itemId, "itemId")), {
       method: "GET",
       ...options,
     });
   },
 
-  async updateItem(itemId, payload = {}, options = {}) {
-    return request(ROUTES.itemById(requireId(itemId, "itemId")), {
+  update(itemId, payload = {}, options = {}) {
+    return request(ROUTES.items.byId(requireId(itemId, "itemId")), {
       method: "PUT",
       body: payload,
       ...options,
     });
   },
 
-  async deleteItem(itemId, options = {}) {
-    return request(ROUTES.itemById(requireId(itemId, "itemId")), {
+  delete(itemId, options = {}) {
+    return request(ROUTES.items.byId(requireId(itemId, "itemId")), {
       method: "DELETE",
       ...options,
     });
   },
 
-  async restoreItem(itemId, options = {}) {
-    return request(ROUTES.restoreItem(requireId(itemId, "itemId")), {
+  restore(itemId, options = {}) {
+    return request(ROUTES.items.restore(requireId(itemId, "itemId")), {
       method: "POST",
       ...options,
     });
   },
+};
 
-  async createCustomer(payload = {}, options = {}) {
-    return request(ROUTES.customers, {
+const customersApi = {
+  create(payload = {}, options = {}) {
+    return request(ROUTES.customers.root, {
       method: "POST",
       body: payload,
       ...options,
     });
   },
 
-  async listCustomers(params = {}, options = {}) {
-    return request(ROUTES.customers, {
+  list(params = {}, options = {}) {
+    return request(ROUTES.customers.root, {
       method: "GET",
       query: params,
       ...options,
     });
   },
 
-  async getCustomerSelection(options = {}) {
-    return request(ROUTES.customerSelection, {
+  getSelection(options = {}) {
+    return request(ROUTES.customers.selection, {
       method: "GET",
       ...options,
     });
   },
 
-  async getCustomer(customerId, options = {}) {
-    return request(ROUTES.customerById(requireId(customerId, "customerId")), {
+  get(customerId, options = {}) {
+    return request(ROUTES.customers.byId(requireId(customerId, "customerId")), {
       method: "GET",
       ...options,
     });
   },
 
-  async updateCustomer(customerId, payload = {}, options = {}) {
-    return request(ROUTES.customerById(requireId(customerId, "customerId")), {
+  update(customerId, payload = {}, options = {}) {
+    return request(ROUTES.customers.byId(requireId(customerId, "customerId")), {
       method: "PUT",
       body: payload,
       ...options,
     });
   },
 
-  async deleteCustomer(customerId, options = {}) {
-    return request(ROUTES.customerById(requireId(customerId, "customerId")), {
+  delete(customerId, options = {}) {
+    return request(ROUTES.customers.byId(requireId(customerId, "customerId")), {
       method: "DELETE",
       ...options,
     });
   },
 
-  async restoreCustomer(customerId, options = {}) {
-    return request(ROUTES.restoreCustomer(requireId(customerId, "customerId")), {
+  restore(customerId, options = {}) {
+    return request(ROUTES.customers.restore(requireId(customerId, "customerId")), {
       method: "POST",
       ...options,
     });
   },
+};
 
-  async createSale(payload = {}, options = {}) {
-    return request(ROUTES.sales, {
+const salesApi = {
+  create(payload = {}, options = {}) {
+    return request(ROUTES.sales.root, {
       method: "POST",
-      body: normalizeReportFilterPayload(payload),
+      body: normalizeDateFields(payload),
       ...options,
     });
   },
 
-  async listSales(params = {}, options = {}) {
-    return request(ROUTES.sales, {
+  list(params = {}, options = {}) {
+    return request(ROUTES.sales.root, {
       method: "GET",
-      query: normalizeReportFilterPayload(params),
+      query: normalizeDateFields(params),
       ...options,
     });
   },
 
-  async getSale(saleId, options = {}) {
-    return request(ROUTES.saleById(requireId(saleId, "saleId")), {
+  get(saleId, options = {}) {
+    return request(ROUTES.sales.byId(requireId(saleId, "saleId")), {
       method: "GET",
       ...options,
     });
   },
 
-  async updateSale(saleId, payload = {}, options = {}) {
-    return request(ROUTES.saleById(requireId(saleId, "saleId")), {
+  update(saleId, payload = {}, options = {}) {
+    return request(ROUTES.sales.byId(requireId(saleId, "saleId")), {
       method: "PUT",
-      body: normalizeReportFilterPayload(payload),
+      body: normalizeDateFields(payload),
       ...options,
     });
   },
 
-  async deleteSale(saleId, options = {}) {
-    return request(ROUTES.saleById(requireId(saleId, "saleId")), {
+  delete(saleId, options = {}) {
+    return request(ROUTES.sales.byId(requireId(saleId, "saleId")), {
       method: "DELETE",
       ...options,
     });
   },
 
-  async restoreSale(saleId, options = {}) {
-    return request(ROUTES.restoreSale(requireId(saleId, "saleId")), {
+  restore(saleId, options = {}) {
+    return request(ROUTES.sales.restore(requireId(saleId, "saleId")), {
       method: "POST",
       ...options,
     });
   },
 
-  async voidSale(saleId, remarks, options = {}) {
-    return request(ROUTES.voidSale(requireId(saleId, "saleId")), {
+  void(saleId, remarks, options = {}) {
+    return request(ROUTES.sales.void(requireId(saleId, "saleId")), {
       method: "POST",
       query: remarks !== undefined ? { remarks } : undefined,
       ...options,
     });
   },
 
-  async deleteSaleLine(saleId, lineId, options = {}) {
+  deleteLine(saleId, lineId, options = {}) {
     requireId(saleId, "saleId");
     requireId(lineId, "lineId");
 
-    return request(ROUTES.saleLineById(saleId, lineId), {
+    return request(ROUTES.sales.lineById(saleId, lineId), {
       method: "DELETE",
       ...options,
     });
   },
+};
 
-  async queryReport(payload = {}, options = {}) {
-    return request(ROUTES.reportQuery, {
+const reportsApi = {
+  query(payload = {}, options = {}) {
+    return request(ROUTES.reports.query, {
       method: "POST",
-      body: normalizeReportFilterPayload(payload),
+      body: normalizeDateFields(payload),
       ...options,
     });
   },
 
-  async getDailyReport(params = {}, options = {}) {
-    return request(ROUTES.dailyReport, {
+  getDaily(params = {}, options = {}) {
+    return request(ROUTES.reports.daily, {
       method: "GET",
-      query: normalizeReportFilterPayload(params),
+      query: normalizeDateFields(params),
       ...options,
     });
   },
 
-  async getWeeklyReport(params = {}, options = {}) {
-    return request(ROUTES.weeklyReport, {
+  getWeekly(params = {}, options = {}) {
+    return request(ROUTES.reports.weekly, {
       method: "GET",
-      query: normalizeReportFilterPayload(params),
+      query: normalizeDateFields(params),
       ...options,
     });
   },
 
-  async getMonthlyReport(params = {}, options = {}) {
-    return request(ROUTES.monthlyReport, {
+  getMonthly(params = {}, options = {}) {
+    return request(ROUTES.reports.monthly, {
       method: "GET",
-      query: normalizeReportFilterPayload(params),
+      query: normalizeDateFields(params),
       ...options,
     });
   },
 
-  async getCustomPeriodReport(params = {}, options = {}) {
-    return request(ROUTES.customReport, {
+  getCustom(params = {}, options = {}) {
+    return request(ROUTES.reports.custom, {
       method: "GET",
-      query: normalizeReportFilterPayload(params),
+      query: normalizeDateFields(params),
       ...options,
     });
   },
 
-  async getAccumulationReport(params = {}, options = {}) {
-    return request(ROUTES.accumulationReport, {
+  getAccumulation(params = {}, options = {}) {
+    return request(ROUTES.reports.accumulation, {
       method: "GET",
-      query: normalizeReportFilterPayload(params),
+      query: normalizeDateFields(params),
       ...options,
     });
   },
 
-  async getTrendReport(payload = {}, options = {}) {
+  getTrend(payload = {}, options = {}) {
     const { interval, ...body } = payload || {};
-    return request(ROUTES.trendReport, {
+    return request(ROUTES.reports.trend, {
       method: "POST",
       query: interval !== undefined ? { interval } : undefined,
-      body: normalizeReportFilterPayload(body),
+      body: normalizeDateFields(body),
       ...options,
     });
   },
 
-  async compareWithPreviousPeriod(payload = {}, options = {}) {
-    return request(ROUTES.compareReport, {
+  compare(payload = {}, options = {}) {
+    return request(ROUTES.reports.compare, {
       method: "POST",
-      body: normalizeReportFilterPayload(payload),
+      body: normalizeDateFields(payload),
       ...options,
     });
   },
 
-  async getDashboard(params = {}, options = {}) {
-    return request(ROUTES.dashboardReport, {
+  getDashboard(params = {}, options = {}) {
+    return request(ROUTES.reports.dashboard, {
       method: "GET",
-      query: normalizeReportFilterPayload(params),
+      query: normalizeDateFields(params),
       ...options,
     });
   },
 
-  async getCustomerSummary(params = {}, options = {}) {
-    return request(ROUTES.customerSummary, {
+  getCustomerSummary(params = {}, options = {}) {
+    return request(ROUTES.reports.summaries.customers, {
       method: "GET",
-      query: normalizeReportFilterPayload(params),
+      query: normalizeDateFields(params),
       ...options,
     });
   },
 
-  async getByproductSummary(params = {}, options = {}) {
-    return request(ROUTES.byproductSummary, {
+  getByproductSummary(params = {}, options = {}) {
+    return request(ROUTES.reports.summaries.byproducts, {
       method: "GET",
-      query: normalizeReportFilterPayload(params),
+      query: normalizeDateFields(params),
       ...options,
     });
   },
 
-  async getCategorySummary(params = {}, options = {}) {
-    return request(ROUTES.categorySummary, {
+  getCategorySummary(params = {}, options = {}) {
+    return request(ROUTES.reports.summaries.categories, {
       method: "GET",
-      query: normalizeReportFilterPayload(params),
+      query: normalizeDateFields(params),
       ...options,
     });
   },
+};
 
-  async createTemplate(payload = {}, options = {}) {
-    return request(ROUTES.templates, {
+const templatesApi = {
+  normalize(meta) {
+    return normalizeTemplateMeta(meta);
+  },
+
+  normalizeList(meta) {
+    return normalizeTemplateList(meta);
+  },
+
+  create(payload = {}, options = {}) {
+    return request(ROUTES.templates.root, {
       method: "POST",
       body: payload,
       ...options,
-    });
+    }).then(normalizeTemplateMeta);
   },
 
-  async uploadTemplate(payload = {}, options = {}) {
-    return request(ROUTES.uploadTemplate, {
+  upload(payload = {}, options = {}) {
+    return request(ROUTES.templates.upload, {
       method: "POST",
       body: buildTemplateUploadFormData(payload),
       ...options,
-    });
+    }).then(normalizeTemplateMeta);
   },
 
-  async listTemplates(params = {}, options = {}) {
-    return request(ROUTES.templates, {
+  list(params = {}, options = {}) {
+    return request(ROUTES.templates.root, {
       method: "GET",
       query: params,
       ...options,
-    });
+    }).then(normalizeTemplateList);
   },
 
-  async getDefaultTemplate(templateType, options = {}) {
+  getDefault(templateType, options = {}) {
     if (!templateType) {
       throw new Error("templateType is required");
     }
 
-    return request(ROUTES.defaultTemplate, {
+    return request(ROUTES.templates.default, {
       method: "GET",
       query: { template_type: templateType },
       ...options,
-    });
+    }).then((result) => (result ? normalizeTemplateMeta(result) : result));
   },
 
-  async getTemplate(templateId, options = {}) {
-    return request(ROUTES.templateById(requireId(templateId, "templateId")), {
+  get(templateId, options = {}) {
+    return request(ROUTES.templates.byId(requireId(templateId, "templateId")), {
       method: "GET",
       ...options,
-    });
+    }).then(normalizeTemplateMeta);
   },
 
-  async updateTemplate(templateId, payload = {}, options = {}) {
-    return request(ROUTES.templateById(requireId(templateId, "templateId")), {
+  update(templateId, payload = {}, options = {}) {
+    return request(ROUTES.templates.byId(requireId(templateId, "templateId")), {
       method: "PUT",
       body: payload,
       ...options,
-    });
+    }).then(normalizeTemplateMeta);
   },
 
-  async replaceTemplateFile(templateId, file, options = {}) {
-    return request(ROUTES.replaceTemplateFile(requireId(templateId, "templateId")), {
+  replaceFile(templateId, file, options = {}) {
+    return request(ROUTES.templates.replaceFile(requireId(templateId, "templateId")), {
       method: "POST",
       body: buildReplaceTemplateFileFormData(file),
       ...options,
-    });
+    }).then(normalizeTemplateMeta);
   },
 
-  async deleteTemplate(templateId, params = {}, options = {}) {
-    return request(ROUTES.templateById(requireId(templateId, "templateId")), {
+  delete(templateId, params = {}, options = {}) {
+    return request(ROUTES.templates.byId(requireId(templateId, "templateId")), {
       method: "DELETE",
       query: params,
       ...options,
     });
   },
 
-  async restoreTemplate(templateId, options = {}) {
-    return request(ROUTES.restoreTemplate(requireId(templateId, "templateId")), {
+  restore(templateId, options = {}) {
+    return request(ROUTES.templates.restore(requireId(templateId, "templateId")), {
       method: "POST",
       ...options,
-    });
+    }).then(normalizeTemplateMeta);
   },
 
-  async setDefaultTemplate(templateId, options = {}) {
-    return request(ROUTES.setDefaultTemplate(requireId(templateId, "templateId")), {
+  setDefault(templateId, options = {}) {
+    return request(ROUTES.templates.setDefault(requireId(templateId, "templateId")), {
       method: "POST",
       ...options,
-    });
+    }).then(normalizeTemplateMeta);
   },
 
-  async refreshTemplatePlaceholders(templateId, options = {}) {
+  refreshPlaceholders(templateId, options = {}) {
     return request(
-      ROUTES.refreshTemplatePlaceholders(requireId(templateId, "templateId")),
+      ROUTES.templates.refreshPlaceholders(requireId(templateId, "templateId")),
       {
         method: "POST",
         ...options,
       }
-    );
+    ).then(normalizeTemplateMeta);
   },
 
-  async previewTemplatePlaceholders(templateId, options = {}) {
-    return request(ROUTES.templatePlaceholders(requireId(templateId, "templateId")), {
+  previewPlaceholders(templateId, options = {}) {
+    return request(ROUTES.templates.placeholders(requireId(templateId, "templateId")), {
       method: "GET",
       ...options,
     });
   },
 
-  async generateReportDocument(payload = {}, query = {}, options = {}) {
-    const response = await request(ROUTES.generateTemplateDocument, {
+  async generateDocument(payload = {}, query = {}, options = {}) {
+    const response = await request(ROUTES.templates.generate, {
       method: "POST",
-      body: normalizeReportFilterPayload(payload),
+      body: normalizeDateFields(payload),
       query,
       ...options,
     });
 
-    return normalizeGeneratedFileMeta(response);
+    return normalizeGeneratedDocumentMeta(response);
   },
 
-  getCategories(params = {}, options = {}) {
-    return this.listCategories(params, options);
+  buildGeneratedDocumentUrl(fileName) {
+    return generatedApi.buildDocumentUrl(fileName);
   },
 
-  getItems(params = {}, options = {}) {
-    return this.listItems(params, options);
+  normalizeGeneratedDocumentMeta(meta) {
+    return generatedApi.normalizeDocumentMeta(meta);
   },
 
-  getCustomers(params = {}, options = {}) {
-    return this.listCustomers(params, options);
+  openGeneratedDocument(meta, options = {}) {
+    return generatedApi.openDocument(meta, options);
   },
 
-  getSales(params = {}, options = {}) {
-    return this.listSales(params, options);
+  downloadGeneratedDocument(meta, options = {}) {
+    return generatedApi.downloadDocument(meta, options);
   },
 };
+
+/* ============================================================================
+   Main service facade
+   - grouped APIs for maintainability
+   - backward-compatible methods for existing code
+============================================================================ */
+
+export const ByproductsService = {
+  getApiBaseUrl,
+  routes: ROUTES,
+
+  generated: generatedApi,
+  categories: categoriesApi,
+  items: itemsApi,
+  customers: customersApi,
+  sales: salesApi,
+  reports: reportsApi,
+  templates: templatesApi,
+
+  buildGeneratedDocumentUrl(...args) {
+    return generatedApi.buildDocumentUrl(...args);
+  },
+
+  normalizeGeneratedDocumentMeta(...args) {
+    return generatedApi.normalizeDocumentMeta(...args);
+  },
+
+  openGeneratedDocument(...args) {
+    return generatedApi.openDocument(...args);
+  },
+
+  downloadGeneratedDocument(...args) {
+    return generatedApi.downloadDocument(...args);
+  },
+
+  createCategory(...args) {
+    return categoriesApi.create(...args);
+  },
+
+  listCategories(...args) {
+    return categoriesApi.list(...args);
+  },
+
+  getCategorySelection(...args) {
+    return categoriesApi.getSelection(...args);
+  },
+
+  getCategory(...args) {
+    return categoriesApi.get(...args);
+  },
+
+  updateCategory(...args) {
+    return categoriesApi.update(...args);
+  },
+
+  deleteCategory(...args) {
+    return categoriesApi.delete(...args);
+  },
+
+  restoreCategory(...args) {
+    return categoriesApi.restore(...args);
+  },
+
+  createItem(...args) {
+    return itemsApi.create(...args);
+  },
+
+  listItems(...args) {
+    return itemsApi.list(...args);
+  },
+
+  getItemSelection(...args) {
+    return itemsApi.getSelection(...args);
+  },
+
+  getItem(...args) {
+    return itemsApi.get(...args);
+  },
+
+  updateItem(...args) {
+    return itemsApi.update(...args);
+  },
+
+  deleteItem(...args) {
+    return itemsApi.delete(...args);
+  },
+
+  restoreItem(...args) {
+    return itemsApi.restore(...args);
+  },
+
+  createCustomer(...args) {
+    return customersApi.create(...args);
+  },
+
+  listCustomers(...args) {
+    return customersApi.list(...args);
+  },
+
+  getCustomerSelection(...args) {
+    return customersApi.getSelection(...args);
+  },
+
+  getCustomer(...args) {
+    return customersApi.get(...args);
+  },
+
+  updateCustomer(...args) {
+    return customersApi.update(...args);
+  },
+
+  deleteCustomer(...args) {
+    return customersApi.delete(...args);
+  },
+
+  restoreCustomer(...args) {
+    return customersApi.restore(...args);
+  },
+
+  createSale(...args) {
+    return salesApi.create(...args);
+  },
+
+  listSales(...args) {
+    return salesApi.list(...args);
+  },
+
+  getSale(...args) {
+    return salesApi.get(...args);
+  },
+
+  updateSale(...args) {
+    return salesApi.update(...args);
+  },
+
+  deleteSale(...args) {
+    return salesApi.delete(...args);
+  },
+
+  restoreSale(...args) {
+    return salesApi.restore(...args);
+  },
+
+  voidSale(...args) {
+    return salesApi.void(...args);
+  },
+
+  deleteSaleLine(...args) {
+    return salesApi.deleteLine(...args);
+  },
+
+  queryReport(...args) {
+    return reportsApi.query(...args);
+  },
+
+  getDailyReport(...args) {
+    return reportsApi.getDaily(...args);
+  },
+
+  getWeeklyReport(...args) {
+    return reportsApi.getWeekly(...args);
+  },
+
+  getMonthlyReport(...args) {
+    return reportsApi.getMonthly(...args);
+  },
+
+  getCustomPeriodReport(...args) {
+    return reportsApi.getCustom(...args);
+  },
+
+  getAccumulationReport(...args) {
+    return reportsApi.getAccumulation(...args);
+  },
+
+  getTrendReport(...args) {
+    return reportsApi.getTrend(...args);
+  },
+
+  compareWithPreviousPeriod(...args) {
+    return reportsApi.compare(...args);
+  },
+
+  getDashboard(...args) {
+    return reportsApi.getDashboard(...args);
+  },
+
+  getCustomerSummary(...args) {
+    return reportsApi.getCustomerSummary(...args);
+  },
+
+  getByproductSummary(...args) {
+    return reportsApi.getByproductSummary(...args);
+  },
+
+  getCategorySummary(...args) {
+    return reportsApi.getCategorySummary(...args);
+  },
+
+  createTemplate(...args) {
+    return templatesApi.create(...args);
+  },
+
+  uploadTemplate(...args) {
+    return templatesApi.upload(...args);
+  },
+
+  listTemplates(...args) {
+    return templatesApi.list(...args);
+  },
+
+  getDefaultTemplate(...args) {
+    return templatesApi.getDefault(...args);
+  },
+
+  getTemplate(...args) {
+    return templatesApi.get(...args);
+  },
+
+  updateTemplate(...args) {
+    return templatesApi.update(...args);
+  },
+
+  replaceTemplateFile(...args) {
+    return templatesApi.replaceFile(...args);
+  },
+
+  deleteTemplate(...args) {
+    return templatesApi.delete(...args);
+  },
+
+  restoreTemplate(...args) {
+    return templatesApi.restore(...args);
+  },
+
+  setDefaultTemplate(...args) {
+    return templatesApi.setDefault(...args);
+  },
+
+  refreshTemplatePlaceholders(...args) {
+    return templatesApi.refreshPlaceholders(...args);
+  },
+
+  previewTemplatePlaceholders(...args) {
+    return templatesApi.previewPlaceholders(...args);
+  },
+
+  generateReportDocument(...args) {
+    return templatesApi.generateDocument(...args);
+  },
+
+  getCategories(...args) {
+    return categoriesApi.list(...args);
+  },
+
+  getItems(...args) {
+    return itemsApi.list(...args);
+  },
+
+  getCustomers(...args) {
+    return customersApi.list(...args);
+  },
+
+  getSales(...args) {
+    return salesApi.list(...args);
+  },
+};
+
+/* ============================================================================
+   Named grouped exports
+============================================================================ */
+
+export const ByproductGeneratedApi = generatedApi;
+export const ByproductCategoriesApi = categoriesApi;
+export const ByproductItemsApi = itemsApi;
+export const ByproductCustomersApi = customersApi;
+export const ByproductSalesApi = salesApi;
+export const ByproductReportsApi = reportsApi;
+export const ByproductTemplatesApi = templatesApi;
+
+/* ============================================================================
+   Backward-compatible named exports
+============================================================================ */
 
 export const createByproductCategory = (...args) =>
   ByproductsService.createCategory(...args);

@@ -12,6 +12,7 @@ from app.models.byproducts import (
     ByproductPaymentMode,
     ByproductSaleStatus,
     ByproductTemplateFormat,
+    ByproductTemplateStorageBackend,
     ByproductTemplateType,
     ByproductUnit,
 )
@@ -42,8 +43,7 @@ def _clean_path_text(value: str | None) -> str | None:
 
 
 def _clean_url_text(value: str | None) -> str | None:
-    value = _clean_text(value)
-    return value
+    return _clean_text(value)
 
 
 # =============================================================================
@@ -228,9 +228,7 @@ class ByproductItemBase(AppSchema):
             self.maximum_unit_price is not None
             and self.default_unit_price > self.maximum_unit_price
         ):
-            raise ValueError(
-                "default_unit_price cannot be greater than maximum_unit_price"
-            )
+            raise ValueError("default_unit_price cannot be greater than maximum_unit_price")
 
         return self
 
@@ -380,9 +378,7 @@ class ByproductCustomerBase(AppSchema):
             Decimal("0"),
             Decimal("0.00"),
         ):
-            raise ValueError(
-                "credit_limit can only be set when credit_allowed is true"
-            )
+            raise ValueError("credit_limit can only be set when credit_allowed is true")
         return self
 
 
@@ -440,6 +436,16 @@ class ByproductCustomerUpdate(AppSchema):
     @classmethod
     def validate_text_fields(cls, value: str | None) -> str | None:
         return _clean_text(value)
+
+    @model_validator(mode="after")
+    def validate_credit_fields(self) -> "ByproductCustomerUpdate":
+        if self.credit_allowed is False and self.credit_limit not in (
+            None,
+            Decimal("0"),
+            Decimal("0.00"),
+        ):
+            raise ValueError("credit_limit can only be set when credit_allowed is true")
+        return self
 
 
 class ByproductCustomerRead(AuditReadMixin):
@@ -830,6 +836,22 @@ class ByproductTrendResponse(AppSchema):
 class ByproductTemplatePlaceholderMeta(AppSchema):
     placeholders: list[str] = Field(default_factory=list)
 
+    @field_validator("placeholders")
+    @classmethod
+    def validate_placeholders(cls, value: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        seen: set[str] = set()
+
+        for item in value or []:
+            text = _clean_text(item)
+            if not text:
+                continue
+            if text not in seen:
+                cleaned.append(text)
+                seen.add(text)
+
+        return cleaned
+
 
 class ByproductReportTemplateBase(AppSchema):
     name: str = Field(..., min_length=1, max_length=180)
@@ -858,8 +880,17 @@ class ByproductReportTemplateBase(AppSchema):
 
 
 class ByproductReportTemplateCreate(ByproductReportTemplateBase):
+    """
+    Manual JSON template creation schema.
+
+    This still supports legacy/manual disk-path registration.
+    Normal uploaded templates should use the /templates/upload route,
+    which stores file bytes in the database.
+    """
+
+    storage_backend: ByproductTemplateStorageBackend = ByproductTemplateStorageBackend.DISK
     file_name: str = Field(..., min_length=1, max_length=255)
-    file_path: str = Field(..., min_length=1, max_length=1000)
+    file_path: str | None = Field(default=None, max_length=1000)
     mime_type: str | None = Field(default=None, max_length=120)
     file_size_bytes: int | None = Field(default=None, ge=0)
 
@@ -873,6 +904,12 @@ class ByproductReportTemplateCreate(ByproductReportTemplateBase):
     def validate_file_path(cls, value: str | None) -> str | None:
         return _clean_path_text(value)
 
+    @model_validator(mode="after")
+    def validate_storage_payload(self) -> "ByproductReportTemplateCreate":
+        if self.storage_backend == ByproductTemplateStorageBackend.DISK and not self.file_path:
+            raise ValueError("file_path is required when storage_backend is 'disk'")
+        return self
+
 
 class ByproductReportTemplateUpdate(AppSchema):
     name: str | None = Field(default=None, min_length=1, max_length=180)
@@ -880,6 +917,7 @@ class ByproductReportTemplateUpdate(AppSchema):
 
     template_type: ByproductTemplateType | None = None
     template_format: ByproductTemplateFormat | None = None
+    storage_backend: ByproductTemplateStorageBackend | None = None
 
     file_name: str | None = Field(default=None, max_length=255)
     file_path: str | None = Field(default=None, max_length=1000)
@@ -913,9 +951,10 @@ class ByproductReportTemplateRead(AuditReadMixin):
 
     template_type: ByproductTemplateType
     template_format: ByproductTemplateFormat
+    storage_backend: ByproductTemplateStorageBackend
 
     file_name: str
-    file_path: str
+    file_path: str | None = None
     mime_type: str | None = None
     file_size_bytes: int | None = None
 
@@ -925,11 +964,8 @@ class ByproductReportTemplateRead(AuditReadMixin):
 
     @field_validator("file_path")
     @classmethod
-    def validate_file_path(cls, value: str) -> str:
-        cleaned = _clean_path_text(value)
-        if not cleaned:
-            raise ValueError("file_path is required")
-        return cleaned
+    def validate_file_path(cls, value: str | None) -> str | None:
+        return _clean_path_text(value)
 
 
 class ByproductReportTemplateListResponse(AppSchema):
@@ -941,6 +977,7 @@ class ByproductReportTemplateFilter(AppSchema):
     search: str | None = None
     template_type: ByproductTemplateType | None = None
     template_format: ByproductTemplateFormat | None = None
+    storage_backend: ByproductTemplateStorageBackend | None = None
     is_default: bool | None = None
     is_active: bool | None = None
     include_deleted: bool = False
@@ -980,11 +1017,14 @@ class ByproductGeneratedDocumentResponse(AppSchema):
     @field_validator("file_name", "mime_type")
     @classmethod
     def validate_text_fields(cls, value: str | None) -> str | None:
-        return _clean_text(value)
+        cleaned = _clean_text(value)
+        if cleaned is None:
+            raise ValueError("value is required")
+        return cleaned
 
     @field_validator("file_path")
     @classmethod
-    def validate_file_path(cls, value: str | None) -> str | None:
+    def validate_file_path(cls, value: str | None) -> str:
         cleaned = _clean_path_text(value)
         if not cleaned:
             raise ValueError("file_path is required")

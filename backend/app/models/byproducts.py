@@ -14,6 +14,7 @@ from sqlalchemy import (
     Index,
     Integer,
     JSON,
+    LargeBinary,
     Numeric,
     String,
     Text,
@@ -81,6 +82,11 @@ class ByproductTemplateType(str, enum.Enum):
 class ByproductTemplateFormat(str, enum.Enum):
     DOCX = "docx"
     HTML = "html"
+
+
+class ByproductTemplateStorageBackend(str, enum.Enum):
+    DATABASE = "database"
+    DISK = "disk"
 
 
 # =============================================================================
@@ -451,9 +457,22 @@ class ByproductReportTemplate(UUIDPrimaryKeyMixin, AuditMixin, SoftDeleteMixin, 
         nullable=False,
         index=True,
     )
+    storage_backend = Column(
+        pg_enum(ByproductTemplateStorageBackend, "byproduct_template_storage_backend_enum"),
+        nullable=False,
+        default=ByproductTemplateStorageBackend.DATABASE,
+        server_default=ByproductTemplateStorageBackend.DATABASE.value,
+        index=True,
+    )
 
     file_name = Column(String(255), nullable=False)
-    file_path = Column(String(500), nullable=False, unique=True)
+
+    # Legacy disk path support. Keep nullable so old and new templates can coexist.
+    file_path = Column(String(500), nullable=True, unique=True)
+
+    # New database-backed template storage.
+    file_blob = Column(LargeBinary, nullable=True)
+
     mime_type = Column(String(120), nullable=True)
     file_size_bytes = Column(Integer, nullable=True)
 
@@ -464,10 +483,28 @@ class ByproductReportTemplate(UUIDPrimaryKeyMixin, AuditMixin, SoftDeleteMixin, 
 
     __table_args__ = (
         UniqueConstraint("template_code", name="uq_byproduct_report_templates_template_code"),
+        CheckConstraint(
+            "(file_blob IS NOT NULL) OR (file_path IS NOT NULL)",
+            name="ck_byproduct_report_templates_has_blob_or_path",
+        ),
+        CheckConstraint(
+            "("
+            "(storage_backend = 'database' AND file_blob IS NOT NULL)"
+            " OR "
+            "(storage_backend = 'disk' AND file_path IS NOT NULL)"
+            ")",
+            name="ck_byproduct_report_templates_storage_backend_matches_payload",
+        ),
         Index(
             "ix_byproduct_report_templates_type_default_active",
             "template_type",
             "is_default",
+            "is_active",
+            "is_deleted",
+        ),
+        Index(
+            "ix_byproduct_report_templates_backend_active",
+            "storage_backend",
             "is_active",
             "is_deleted",
         ),

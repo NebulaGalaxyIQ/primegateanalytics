@@ -8,10 +8,11 @@ import subprocess
 import tempfile
 import zipfile
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
 from typing import Any
-from uuid import UUID, uuid4
 from urllib.parse import quote
+from uuid import UUID
 
 from fastapi import HTTPException, UploadFile, status
 from jinja2 import BaseLoader, Environment, select_autoescape
@@ -21,6 +22,7 @@ from sqlalchemy.orm import Session
 from app.models.byproducts import (
     ByproductReportTemplate,
     ByproductTemplateFormat,
+    ByproductTemplateStorageBackend,
     ByproductTemplateType,
 )
 from app.schemas.byproducts import (
@@ -59,10 +61,8 @@ except Exception:  # pragma: no cover
 
 
 BASE_DIR = Path(__file__).resolve().parents[2]
-DEFAULT_TEMPLATE_ROOT = BASE_DIR / "storage" / "byproducts" / "templates"
 DEFAULT_OUTPUT_ROOT = BASE_DIR / "storage" / "byproducts" / "generated"
 
-# This matches the router download endpoint you should expose.
 GENERATED_DOWNLOAD_ROUTE = "/byproducts/generated/download"
 
 PLACEHOLDER_PATTERN = re.compile(r"{{\s*([a-zA-Z0-9_.\-\[\]]+)\s*}}")
@@ -147,6 +147,17 @@ def _delete_file_safely(path: str | Path | None) -> None:
         pass
 
 
+def _delete_dir_safely(path: str | Path | None) -> None:
+    if not path:
+        return
+    try:
+        resolved = Path(path)
+        if resolved.exists() and resolved.is_dir():
+            shutil.rmtree(resolved, ignore_errors=True)
+    except Exception:
+        pass
+
+
 def _detect_mime_type_by_extension(path: Path) -> str:
     ext = path.suffix.lower()
     if ext == ".docx":
@@ -161,14 +172,6 @@ def _detect_mime_type_by_extension(path: Path) -> str:
 def _safe_output_name(base_name: str, suffix: str) -> str:
     stamp = _utcnow().strftime("%Y%m%d-%H%M%S")
     return f"{_slugify(base_name)}-{stamp}.{suffix}"
-
-
-def _template_storage_dir(
-    template_type: ByproductTemplateType,
-    root: Path | None = None,
-) -> Path:
-    root_path = _resolve_disk_path(root) if root else DEFAULT_TEMPLATE_ROOT
-    return _ensure_dir(root_path / template_type.value)
 
 
 def _output_storage_dir(root: Path | None = None) -> Path:
@@ -186,19 +189,105 @@ def _read_text_file(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="ignore")
 
 
+def _read_upload_bytes(upload: UploadFile) -> bytes:
+    if upload is None or not upload.filename:
+        raise _http_400("A template file is required")
+
+    try:
+        if hasattr(upload.file, "seek"):
+            upload.file.seek(0)
+    except Exception:
+        pass
+
+    content = upload.file.read()
+    if not content:
+        raise _http_400("Uploaded template file is empty")
+    return content
+
+
+def _validate_upload_extension(
+    file_name: str,
+    template_format: ByproductTemplateFormat,
+) -> None:
+    extension = Path(file_name).suffix.lower()
+    expected_extension = f".{template_format.value}"
+
+    if extension != expected_extension:
+        raise _http_400(
+            f"Uploaded file extension '{extension}' does not match template_format '{template_format.value}'"
+        )
+
+
+def _normalize_placeholders_meta(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if hasattr(value, "model_dump"):
+        dumped = value.model_dump()
+        return dumped if isinstance(dumped, dict) else {"value": dumped}
+    if isinstance(value, dict):
+        return value
+    return {"value": value}
+
+
+def _storage_backend_value(value: Any) -> str | None:
+    if value is None:
+        return None
+    if hasattr(value, "value"):
+        return str(value.value)
+    return str(value)
+
+
+def _template_is_database_backed(template: ByproductReportTemplate) -> bool:
+    backend = _storage_backend_value(getattr(template, "storage_backend", None))
+    if backend == ByproductTemplateStorageBackend.DATABASE.value:
+        return True
+    return bool(template.file_blob)
+
+
+def _template_is_disk_backed(template: ByproductReportTemplate) -> bool:
+    backend = _storage_backend_value(getattr(template, "storage_backend", None))
+    if backend == ByproductTemplateStorageBackend.DISK.value:
+        return True
+    return bool(template.file_path and not template.file_blob)
+
+
+def _ensure_existing_file_or_400(file_path: str | Path, *, label: str) -> Path:
+    resolved = _resolve_disk_path(file_path)
+    if not resolved.exists():
+        raise _http_400(f"{label} does not exist on disk: {resolved}")
+    return resolved
+
+
+def _build_generated_download_url(file_name: str) -> str:
+    return f"{GENERATED_DOWNLOAD_ROUTE}?file_name={quote(file_name)}"
+
+
+def _build_generated_response(path: Path) -> ByproductGeneratedDocumentResponse:
+    resolved = path.resolve()
+    return ByproductGeneratedDocumentResponse(
+        file_name=resolved.name,
+        file_path=_to_storage_path_string(resolved),
+        download_url=_build_generated_download_url(resolved.name),
+        mime_type=_detect_mime_type_by_extension(resolved),
+        size_bytes=resolved.stat().st_size if resolved.exists() else None,
+    )
+
+
+# =============================================================================
+# PLACEHOLDER HELPERS
+# =============================================================================
+
+
 def _extract_placeholders_from_text(text: str) -> list[str]:
     matches = PLACEHOLDER_PATTERN.findall(text or "")
     return sorted(set(m.strip() for m in matches if m and m.strip()))
 
 
-def _extract_placeholders_from_docx(path: Path) -> list[str]:
-    if not path.exists():
-        return []
-
+def _extract_placeholders_from_docx_bytes(content: bytes) -> list[str]:
     placeholders: set[str] = set()
 
     try:
-        with zipfile.ZipFile(path, "r") as archive:
+        with zipfile.ZipFile(BytesIO(content), "r") as archive:
             for name in archive.namelist():
                 if not name.startswith("word/") or not name.endswith(".xml"):
                     continue
@@ -215,6 +304,29 @@ def _extract_placeholders_from_docx(path: Path) -> list[str]:
         return []
 
     return sorted(placeholders)
+
+
+def _extract_placeholders_from_docx(path: Path) -> list[str]:
+    if not path.exists():
+        return []
+    try:
+        return _extract_placeholders_from_docx_bytes(path.read_bytes())
+    except Exception:
+        return []
+
+
+def _extract_placeholders_from_bytes(
+    content: bytes,
+    template_format: ByproductTemplateFormat,
+) -> list[str]:
+    if template_format == ByproductTemplateFormat.DOCX:
+        return _extract_placeholders_from_docx_bytes(content)
+
+    if template_format == ByproductTemplateFormat.HTML:
+        text = content.decode("utf-8", errors="ignore")
+        return _extract_placeholders_from_text(text)
+
+    return []
 
 
 def _extract_placeholders(
@@ -239,6 +351,31 @@ def _build_placeholder_meta(
     template_format: ByproductTemplateFormat,
 ) -> dict[str, Any]:
     return {"placeholders": _extract_placeholders(file_path, template_format)}
+
+
+def _build_placeholder_meta_from_bytes(
+    content: bytes,
+    template_format: ByproductTemplateFormat,
+) -> dict[str, Any]:
+    return {"placeholders": _extract_placeholders_from_bytes(content, template_format)}
+
+
+def _build_placeholder_meta_for_template(
+    template: ByproductReportTemplate,
+) -> dict[str, Any]:
+    if template.file_blob:
+        return _build_placeholder_meta_from_bytes(template.file_blob, template.template_format)
+
+    if template.file_path:
+        resolved = _ensure_existing_file_or_400(template.file_path, label="Template file")
+        return _build_placeholder_meta(resolved, template.template_format)
+
+    return {"placeholders": []}
+
+
+# =============================================================================
+# DATABASE HELPERS
+# =============================================================================
 
 
 def _serialize_template(obj: ByproductReportTemplate) -> ByproductReportTemplateRead:
@@ -272,11 +409,15 @@ def _template_exists_by_path(
         q = q.filter(ByproductReportTemplate.id != exclude_id)
 
     for row in q.all():
+        existing_path = getattr(row, "file_path", None)
+        if not existing_path:
+            continue
+
         try:
-            if _resolve_disk_path(row.file_path) == target_path:
+            if _resolve_disk_path(existing_path) == target_path:
                 return True
         except Exception:
-            if row.file_path == _to_storage_path_string(target_path):
+            if existing_path == _to_storage_path_string(target_path):
                 return True
 
     return False
@@ -314,16 +455,16 @@ def _get_template_by_code(
     return q.first()
 
 
-def _apply_create_audit(obj, actor_id: UUID | None) -> None:
+def _apply_create_audit(obj: Any, actor_id: int | None) -> None:
     obj.created_by_id = actor_id
     obj.updated_by_id = actor_id
 
 
-def _apply_update_audit(obj, actor_id: UUID | None) -> None:
+def _apply_update_audit(obj: Any, actor_id: int | None) -> None:
     obj.updated_by_id = actor_id
 
 
-def _apply_soft_delete(obj, actor_id: UUID | None) -> None:
+def _apply_soft_delete(obj: Any, actor_id: int | None) -> None:
     obj.is_active = False
     obj.is_deleted = True
     obj.deleted_at = _utcnow()
@@ -331,7 +472,7 @@ def _apply_soft_delete(obj, actor_id: UUID | None) -> None:
     obj.updated_by_id = actor_id
 
 
-def _apply_restore(obj, actor_id: UUID | None) -> None:
+def _apply_restore(obj: Any, actor_id: int | None) -> None:
     obj.is_deleted = False
     obj.deleted_at = None
     obj.deleted_by_id = None
@@ -342,7 +483,7 @@ def _set_default_for_type(
     db: Session,
     target: ByproductReportTemplate,
     *,
-    actor_id: UUID | None = None,
+    actor_id: int | None = None,
 ) -> None:
     (
         db.query(ByproductReportTemplate)
@@ -364,71 +505,29 @@ def _set_default_for_type(
     target.updated_by_id = actor_id
 
 
-def _ensure_existing_file_or_400(file_path: str | Path, *, label: str) -> Path:
-    resolved = _resolve_disk_path(file_path)
-    if not resolved.exists():
-        raise _http_400(f"{label} does not exist on disk: {resolved}")
-    return resolved
-
-
-def _build_generated_download_url(file_name: str) -> str:
-    return f"{GENERATED_DOWNLOAD_ROUTE}?file_name={quote(file_name)}"
-
-
-def _build_generated_response(path: Path) -> ByproductGeneratedDocumentResponse:
-    resolved = path.resolve()
-    return ByproductGeneratedDocumentResponse(
-        file_name=resolved.name,
-        file_path=_to_storage_path_string(resolved),
-        download_url=_build_generated_download_url(resolved.name),
-        mime_type=_detect_mime_type_by_extension(resolved),
-        size_bytes=resolved.stat().st_size if resolved.exists() else None,
-    )
-
-
 # =============================================================================
-# FILE STORAGE HELPERS
+# TEMPLATE MATERIALIZATION HELPERS
 # =============================================================================
 
 
-def save_uploaded_template_file(
-    upload: UploadFile,
-    *,
-    template_type: ByproductTemplateType,
-    template_format: ByproductTemplateFormat,
-    storage_root: Path | None = None,
-) -> dict[str, Any]:
-    if upload is None or not upload.filename:
-        raise _http_400("A template file is required")
+def _materialize_template_to_temp_file(
+    template: ByproductReportTemplate,
+) -> tuple[Path, Path | None]:
+    if template.file_blob:
+        suffix = f".{template.template_format.value}"
+        temp_dir = Path(tempfile.mkdtemp(prefix="byproduct-template-"))
+        temp_path = temp_dir / f"template{suffix}"
+        temp_path.write_bytes(template.file_blob)
+        return temp_path, temp_dir
 
-    extension = Path(upload.filename).suffix.lower()
-    expected_extension = f".{template_format.value}"
-
-    if extension != expected_extension:
-        raise _http_400(
-            f"Uploaded file extension '{extension}' does not match template_format '{template_format.value}'"
+    if template.file_path:
+        resolved = _ensure_existing_file_or_400(
+            template.file_path,
+            label="Selected template file",
         )
+        return resolved, None
 
-    target_dir = _template_storage_dir(template_type, storage_root)
-    stored_name = f"{uuid4().hex}-{_slugify(Path(upload.filename).stem)}{extension}"
-    stored_path = target_dir / stored_name
-
-    try:
-        if hasattr(upload.file, "seek"):
-            upload.file.seek(0)
-    except Exception:
-        pass
-
-    with stored_path.open("wb") as output_stream:
-        shutil.copyfileobj(upload.file, output_stream)
-
-    return {
-        "file_name": upload.filename,
-        "file_path": _to_storage_path_string(stored_path),
-        "mime_type": upload.content_type or _detect_mime_type_by_extension(stored_path),
-        "file_size_bytes": stored_path.stat().st_size,
-        "placeholders_meta": _build_placeholder_meta(stored_path, template_format),
-    }
+    raise _http_400("Selected template has no stored file content")
 
 
 # =============================================================================
@@ -440,8 +539,15 @@ def create_template(
     db: Session,
     payload: ByproductReportTemplateCreate,
     *,
-    actor_id: UUID | None = None,
+    actor_id: int | None = None,
 ) -> ByproductReportTemplateRead:
+    """
+    Manual template creation service.
+
+    This keeps support for legacy/manual disk-path templates created via JSON payload.
+    Normal frontend uploads should use create_template_from_upload(), which stores
+    the uploaded template bytes in the database.
+    """
     template_code = _normalize_upper(payload.template_code)
     if not template_code:
         raise _http_400("template_code is required")
@@ -449,9 +555,9 @@ def create_template(
     if _template_exists_by_code(db, template_code):
         raise _http_409("A byproducts template with this template code already exists")
 
-    file_path = _normalize_text(payload.file_path)
+    file_path = _normalize_text(getattr(payload, "file_path", None))
     if not file_path:
-        raise _http_400("file_path is required")
+        raise _http_400("file_path is required for manual template creation")
 
     resolved_path = _ensure_existing_file_or_400(file_path, label="Template file_path")
     normalized_file_path = _to_storage_path_string(resolved_path)
@@ -459,19 +565,19 @@ def create_template(
     if _template_exists_by_path(db, normalized_file_path):
         raise _http_409("A byproducts template with this file path already exists")
 
-    placeholders_meta = (
-        payload.placeholders_meta.model_dump()
-        if payload.placeholders_meta is not None
-        else _build_placeholder_meta(resolved_path, payload.template_format)
-    )
+    placeholders_meta = _normalize_placeholders_meta(getattr(payload, "placeholders_meta", None))
+    if placeholders_meta is None:
+        placeholders_meta = _build_placeholder_meta(resolved_path, payload.template_format)
 
     obj = ByproductReportTemplate(
         name=payload.name,
         template_code=template_code,
         template_type=payload.template_type,
         template_format=payload.template_format,
+        storage_backend=ByproductTemplateStorageBackend.DISK,
         file_name=payload.file_name,
         file_path=normalized_file_path,
+        file_blob=None,
         mime_type=payload.mime_type or _detect_mime_type_by_extension(resolved_path),
         file_size_bytes=payload.file_size_bytes or resolved_path.stat().st_size,
         is_default=payload.is_default,
@@ -504,36 +610,50 @@ def create_template_from_upload(
     is_default: bool = False,
     notes: str | None = None,
     is_active: bool = True,
-    storage_root: Path | None = None,
-    actor_id: UUID | None = None,
+    storage_root: Path | None = None,  # kept for compatibility; unused in DB mode
+    actor_id: int | None = None,
 ) -> ByproductReportTemplateRead:
-    saved = save_uploaded_template_file(
-        upload,
-        template_type=template_type,
-        template_format=template_format,
-        storage_root=storage_root,
-    )
+    del storage_root  # uploaded templates are now stored in the database
 
-    payload = ByproductReportTemplateCreate(
+    template_code = _normalize_upper(template_code)
+    if not template_code:
+        raise _http_400("template_code is required")
+
+    if _template_exists_by_code(db, template_code):
+        raise _http_409("A byproducts template with this template code already exists")
+
+    _validate_upload_extension(upload.filename or "", template_format)
+    content = _read_upload_bytes(upload)
+    placeholders_meta = _build_placeholder_meta_from_bytes(content, template_format)
+
+    obj = ByproductReportTemplate(
         name=name,
         template_code=template_code,
         template_type=template_type,
         template_format=template_format,
-        file_name=saved["file_name"],
-        file_path=saved["file_path"],
-        mime_type=saved["mime_type"],
-        file_size_bytes=saved["file_size_bytes"],
+        storage_backend=ByproductTemplateStorageBackend.DATABASE,
+        file_name=upload.filename or f"template.{template_format.value}",
+        file_path=None,
+        file_blob=content,
+        mime_type=upload.content_type or _detect_mime_type_by_extension(Path(upload.filename or f"x.{template_format.value}")),
+        file_size_bytes=len(content),
         is_default=is_default,
-        placeholders_meta=saved["placeholders_meta"],
+        placeholders_meta=placeholders_meta,
         notes=notes,
         is_active=is_active,
+        is_deleted=False,
     )
+    _apply_create_audit(obj, actor_id)
 
-    try:
-        return create_template(db, payload, actor_id=actor_id)
-    except Exception:
-        _delete_file_safely(saved["file_path"])
-        raise
+    db.add(obj)
+    db.flush()
+
+    if is_default:
+        _set_default_for_type(db, obj, actor_id=actor_id)
+
+    db.commit()
+    db.refresh(obj)
+    return _serialize_template(obj)
 
 
 def get_template(db: Session, template_id: UUID) -> ByproductReportTemplateRead:
@@ -599,7 +719,7 @@ def update_template(
     template_id: UUID,
     payload: ByproductReportTemplateUpdate,
     *,
-    actor_id: UUID | None = None,
+    actor_id: int | None = None,
 ) -> ByproductReportTemplateRead:
     obj = _get_template_or_404(db, template_id)
 
@@ -642,19 +762,29 @@ def update_template(
         ):
             raise _http_409("Another byproducts template already uses this file_path")
 
+        obj.storage_backend = ByproductTemplateStorageBackend.DISK
         obj.file_path = normalized_file_path
+        obj.file_blob = None
         obj.placeholders_meta = _build_placeholder_meta(resolved_path, obj.template_format)
         obj.file_size_bytes = resolved_path.stat().st_size
         obj.mime_type = _detect_mime_type_by_extension(resolved_path)
 
-    elif payload.template_format is not None and obj.file_path:
-        existing_path = _ensure_existing_file_or_400(
-            obj.file_path,
-            label="Template file_path",
-        )
-        obj.placeholders_meta = _build_placeholder_meta(existing_path, obj.template_format)
-        obj.file_size_bytes = existing_path.stat().st_size
-        obj.mime_type = _detect_mime_type_by_extension(existing_path)
+    elif payload.template_format is not None:
+        if obj.file_blob:
+            obj.placeholders_meta = _build_placeholder_meta_from_bytes(
+                obj.file_blob,
+                obj.template_format,
+            )
+            obj.file_size_bytes = len(obj.file_blob)
+            obj.mime_type = _detect_mime_type_by_extension(Path(obj.file_name))
+        elif obj.file_path:
+            existing_path = _ensure_existing_file_or_400(
+                obj.file_path,
+                label="Template file_path",
+            )
+            obj.placeholders_meta = _build_placeholder_meta(existing_path, obj.template_format)
+            obj.file_size_bytes = existing_path.stat().st_size
+            obj.mime_type = _detect_mime_type_by_extension(existing_path)
 
     if payload.mime_type is not None:
         obj.mime_type = payload.mime_type
@@ -665,8 +795,8 @@ def update_template(
     if payload.notes is not None:
         obj.notes = payload.notes
 
-    if payload.placeholders_meta is not None:
-        obj.placeholders_meta = payload.placeholders_meta.model_dump()
+    if getattr(payload, "placeholders_meta", None) is not None:
+        obj.placeholders_meta = _normalize_placeholders_meta(payload.placeholders_meta)
 
     if payload.is_active is not None:
         obj.is_active = payload.is_active
@@ -688,35 +818,31 @@ def replace_template_file(
     template_id: UUID,
     *,
     upload: UploadFile,
-    storage_root: Path | None = None,
-    actor_id: UUID | None = None,
+    storage_root: Path | None = None,  # kept for compatibility; unused in DB mode
+    actor_id: int | None = None,
 ) -> ByproductReportTemplateRead:
+    del storage_root  # replaced uploads are stored in the database
+
     obj = _get_template_or_404(db, template_id)
 
-    saved = save_uploaded_template_file(
-        upload,
-        template_type=obj.template_type,
-        template_format=obj.template_format,
-        storage_root=storage_root,
-    )
+    _validate_upload_extension(upload.filename or "", obj.template_format)
+    content = _read_upload_bytes(upload)
 
     old_path = obj.file_path
 
-    try:
-        obj.file_name = saved["file_name"]
-        obj.file_path = saved["file_path"]
-        obj.mime_type = saved["mime_type"]
-        obj.file_size_bytes = saved["file_size_bytes"]
-        obj.placeholders_meta = saved["placeholders_meta"]
+    obj.storage_backend = ByproductTemplateStorageBackend.DATABASE
+    obj.file_name = upload.filename or obj.file_name
+    obj.file_path = None
+    obj.file_blob = content
+    obj.mime_type = upload.content_type or _detect_mime_type_by_extension(Path(obj.file_name))
+    obj.file_size_bytes = len(content)
+    obj.placeholders_meta = _build_placeholder_meta_from_bytes(content, obj.template_format)
 
-        _apply_update_audit(obj, actor_id)
-        db.commit()
-        db.refresh(obj)
-    except Exception:
-        _delete_file_safely(saved["file_path"])
-        raise
+    _apply_update_audit(obj, actor_id)
+    db.commit()
+    db.refresh(obj)
 
-    if old_path and old_path != obj.file_path:
+    if old_path:
         _delete_file_safely(old_path)
 
     return _serialize_template(obj)
@@ -726,7 +852,7 @@ def delete_template(
     db: Session,
     template_id: UUID,
     *,
-    actor_id: UUID | None = None,
+    actor_id: int | None = None,
     delete_file_from_disk: bool = False,
 ) -> MessageResponse:
     obj = _get_template_or_404(db, template_id)
@@ -736,7 +862,7 @@ def delete_template(
     obj.is_default = False
     db.commit()
 
-    if delete_file_from_disk:
+    if delete_file_from_disk and file_path:
         _delete_file_safely(file_path)
 
     return MessageResponse(message="Byproducts report template deleted successfully")
@@ -746,7 +872,7 @@ def restore_template(
     db: Session,
     template_id: UUID,
     *,
-    actor_id: UUID | None = None,
+    actor_id: int | None = None,
 ) -> ByproductReportTemplateRead:
     obj = _get_template_or_404(db, template_id, include_deleted=True)
 
@@ -762,7 +888,7 @@ def set_default_template(
     db: Session,
     template_id: UUID,
     *,
-    actor_id: UUID | None = None,
+    actor_id: int | None = None,
 ) -> ByproductReportTemplateRead:
     obj = _get_template_or_404(db, template_id)
     _set_default_for_type(db, obj, actor_id=actor_id)
@@ -775,16 +901,26 @@ def refresh_template_placeholders(
     db: Session,
     template_id: UUID,
     *,
-    actor_id: UUID | None = None,
+    actor_id: int | None = None,
 ) -> ByproductReportTemplateRead:
     obj = _get_template_or_404(db, template_id)
-    file_path = _ensure_existing_file_or_400(obj.file_path, label="Template file")
 
-    obj.placeholders_meta = _build_placeholder_meta(file_path, obj.template_format)
-    obj.file_size_bytes = file_path.stat().st_size
-    obj.mime_type = _detect_mime_type_by_extension(file_path)
+    if obj.file_blob:
+        obj.placeholders_meta = _build_placeholder_meta_from_bytes(
+            obj.file_blob,
+            obj.template_format,
+        )
+        obj.file_size_bytes = len(obj.file_blob)
+        obj.mime_type = _detect_mime_type_by_extension(Path(obj.file_name))
+    elif obj.file_path:
+        file_path = _ensure_existing_file_or_400(obj.file_path, label="Template file")
+        obj.placeholders_meta = _build_placeholder_meta(file_path, obj.template_format)
+        obj.file_size_bytes = file_path.stat().st_size
+        obj.mime_type = _detect_mime_type_by_extension(file_path)
+    else:
+        raise _http_400("Template has no stored file content")
+
     _apply_update_audit(obj, actor_id)
-
     db.commit()
     db.refresh(obj)
     return _serialize_template(obj)
@@ -1205,7 +1341,12 @@ def _resolve_template_for_render(
     if template.is_deleted or not template.is_active:
         raise _http_400("Selected byproducts report template is inactive or deleted")
 
-    _ensure_existing_file_or_400(template.file_path, label="Selected template file")
+    if not template.file_blob and not template.file_path:
+        raise _http_400("Selected template has no stored file content")
+
+    if not template.file_blob and template.file_path:
+        _ensure_existing_file_or_400(template.file_path, label="Selected template file")
+
     return template
 
 
@@ -1236,53 +1377,54 @@ def generate_report_document(
         report_title=report_title or template.name,
     )
 
-    template_path = _ensure_existing_file_or_400(
-        template.file_path,
-        label="Selected template file",
-    )
+    template_path, template_cleanup_dir = _materialize_template_to_temp_file(template)
     output_format = request.output_format.lower().strip()
     base_name = f"{template.name}-{context.get('report_type', 'report')}"
 
-    if template.template_format == ByproductTemplateFormat.DOCX:
-        if output_format == "docx":
-            output_path = output_root / _safe_output_name(base_name, "docx")
-            _render_docx_template(template_path, output_path, context)
-            return _build_generated_response(output_path)
+    try:
+        if template.template_format == ByproductTemplateFormat.DOCX:
+            if output_format == "docx":
+                output_path = output_root / _safe_output_name(base_name, "docx")
+                _render_docx_template(template_path, output_path, context)
+                return _build_generated_response(output_path)
 
-        if output_format == "pdf":
-            rendered_docx_path = output_root / _safe_output_name(base_name, "docx")
-            output_pdf_path = output_root / _safe_output_name(base_name, "pdf")
+            if output_format == "pdf":
+                rendered_docx_path = output_root / _safe_output_name(base_name, "docx")
+                output_pdf_path = output_root / _safe_output_name(base_name, "pdf")
 
-            _render_docx_template(template_path, rendered_docx_path, context)
+                _render_docx_template(template_path, rendered_docx_path, context)
 
-            try:
-                _convert_docx_to_pdf(rendered_docx_path, output_pdf_path)
-            finally:
-                _delete_file_safely(rendered_docx_path)
+                try:
+                    _convert_docx_to_pdf(rendered_docx_path, output_pdf_path)
+                finally:
+                    _delete_file_safely(rendered_docx_path)
 
-            return _build_generated_response(output_pdf_path)
+                return _build_generated_response(output_pdf_path)
 
-        raise _http_400("DOCX templates support output_format 'docx' and 'pdf' only")
+            raise _http_400("DOCX templates support output_format 'docx' and 'pdf' only")
 
-    if template.template_format == ByproductTemplateFormat.HTML:
-        rendered_html_path = output_root / _safe_output_name(base_name, "html")
-        _render_html_template(template_path, rendered_html_path, context)
+        if template.template_format == ByproductTemplateFormat.HTML:
+            rendered_html_path = output_root / _safe_output_name(base_name, "html")
+            _render_html_template(template_path, rendered_html_path, context)
 
-        if output_format == "html":
-            return _build_generated_response(rendered_html_path)
+            if output_format == "html":
+                return _build_generated_response(rendered_html_path)
 
-        if output_format == "pdf":
-            output_pdf_path = output_root / _safe_output_name(base_name, "pdf")
-            try:
-                _render_pdf_from_html(rendered_html_path, output_pdf_path)
-            finally:
-                _delete_file_safely(rendered_html_path)
+            if output_format == "pdf":
+                output_pdf_path = output_root / _safe_output_name(base_name, "pdf")
+                try:
+                    _render_pdf_from_html(rendered_html_path, output_pdf_path)
+                finally:
+                    _delete_file_safely(rendered_html_path)
 
-            return _build_generated_response(output_pdf_path)
+                return _build_generated_response(output_pdf_path)
 
-        raise _http_400("HTML templates support output_format 'html' and 'pdf' only")
+            raise _http_400("HTML templates support output_format 'html' and 'pdf' only")
 
-    raise _http_400("Unsupported byproducts template format")
+        raise _http_400("Unsupported byproducts template format")
+    finally:
+        if template_cleanup_dir is not None:
+            _delete_dir_safely(template_cleanup_dir)
 
 
 # =============================================================================
@@ -1309,9 +1451,7 @@ def get_default_template_for_type(
 
 def preview_template_placeholders(db: Session, template_id: UUID) -> dict[str, Any]:
     obj = _get_template_or_404(db, template_id)
-    file_path = _ensure_existing_file_or_400(obj.file_path, label="Template file")
-
-    placeholders_meta = _build_placeholder_meta(file_path, obj.template_format)
+    placeholders_meta = _build_placeholder_meta_for_template(obj)
     placeholders = placeholders_meta.get("placeholders", [])
 
     return {
@@ -1319,6 +1459,7 @@ def preview_template_placeholders(db: Session, template_id: UUID) -> dict[str, A
         "template_code": obj.template_code,
         "template_name": obj.name,
         "template_format": obj.template_format.value,
+        "storage_backend": _storage_backend_value(obj.storage_backend),
         "placeholders": placeholders,
         "count": len(placeholders),
     }

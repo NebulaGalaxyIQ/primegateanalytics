@@ -16,7 +16,35 @@ const GREEN = "#16a34a";
 const GREEN_SOFT = "rgba(22,163,74,0.10)";
 const RED = "#dc2626";
 const RED_SOFT = "rgba(220,38,38,0.10)";
+const PURPLE = "#7c3aed";
+const PURPLE_SOFT = "rgba(124,58,237,0.10)";
 const SHADOW = "0 10px 30px rgba(15, 23, 42, 0.06)";
+
+const TEMPLATE_TYPE_OPTIONS = [
+  { value: "daily", label: "Daily" },
+  { value: "weekly", label: "Weekly" },
+  { value: "monthly", label: "Monthly" },
+  { value: "custom_period", label: "Custom Period" },
+  { value: "accumulation", label: "Accumulation" },
+];
+
+const TEMPLATE_FORMAT_OPTIONS = [
+  { value: "docx", label: "DOCX" },
+  { value: "html", label: "HTML" },
+];
+
+const STORAGE_OPTIONS = [
+  { value: "", label: "All storage" },
+  { value: "database", label: "Database" },
+  { value: "disk", label: "Disk" },
+];
+
+function humanize(value) {
+  if (value === null || value === undefined || value === "") return "—";
+  return String(value)
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (m) => m.toUpperCase());
+}
 
 function coerceItems(response) {
   if (Array.isArray(response)) return response;
@@ -90,7 +118,19 @@ function formatFileSize(bytes) {
 
 function valueText(value) {
   if (value === null || value === undefined || value === "") return "—";
-  return String(value).replace(/_/g, " ");
+  return String(value);
+}
+
+function templateAccept(format) {
+  return format === "html"
+    ? ".html,text/html"
+    : ".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+}
+
+function storageLabel(template) {
+  if (template?.storage_label) return template.storage_label;
+  if (template?.storage_backend === "database") return "Stored in database";
+  return template?.file_path || "Stored on disk";
 }
 
 function StatusPill({ active, deleted }) {
@@ -143,13 +183,40 @@ function DefaultPill({ isDefault }) {
   );
 }
 
-function MetricCard({ title, value, color = TEXT }) {
+function StoragePill({ backend }) {
+  const isDatabase = backend === "database";
+  const background = isDatabase ? PURPLE_SOFT : BLUE_SOFT;
+  const color = isDatabase ? PURPLE : BLUE;
+
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        minHeight: 30,
+        padding: "4px 10px",
+        borderRadius: 999,
+        fontSize: 12,
+        fontWeight: 800,
+        background,
+        color,
+        whiteSpace: "nowrap",
+      }}
+    >
+      {isDatabase ? "Database" : "Disk"}
+    </span>
+  );
+}
+
+function MetricCard({ title, value, color = TEXT, hint }) {
   return (
     <div className="metricCard">
       <div className="metricLabel">{title}</div>
       <div className="metricValue" style={{ color }}>
         {value}
       </div>
+      {hint ? <div className="metricHint">{hint}</div> : null}
     </div>
   );
 }
@@ -164,6 +231,8 @@ function TemplateMetaRow({ label, value, strong = false }) {
 }
 
 export default function ByproductsTemplatesPage() {
+  const templateApi = ByproductsService.templates || ByproductsService;
+
   const [templates, setTemplates] = useState([]);
   const [total, setTotal] = useState(0);
 
@@ -174,6 +243,7 @@ export default function ByproductsTemplatesPage() {
     search: "",
     template_type: "",
     template_format: "",
+    storage_backend: "",
     is_default: "",
     is_active: "",
     include_deleted: false,
@@ -212,10 +282,11 @@ export default function ByproductsTemplatesPage() {
     setError("");
 
     try {
-      const response = await ByproductsService.listTemplates({
+      const response = await templateApi.list({
         search: filters.search || undefined,
         template_type: filters.template_type || undefined,
         template_format: filters.template_format || undefined,
+        storage_backend: filters.storage_backend || undefined,
         is_default:
           filters.is_default === ""
             ? undefined
@@ -237,7 +308,7 @@ export default function ByproductsTemplatesPage() {
       setLoading(false);
       setTableLoading(false);
     }
-  }, [filters]);
+  }, [filters, templateApi]);
 
   useEffect(() => {
     loadTemplates();
@@ -259,11 +330,16 @@ export default function ByproductsTemplatesPage() {
       0
     );
 
+    const databaseCount = templates.filter(
+      (item) => item?.storage_backend === "database" && !item?.is_deleted
+    ).length;
+
     return {
       activeCount,
       defaultCount,
       deletedCount,
       placeholderTotal,
+      databaseCount,
     };
   }, [templates]);
 
@@ -281,6 +357,7 @@ export default function ByproductsTemplatesPage() {
       search: "",
       template_type: "",
       template_format: "",
+      storage_backend: "",
       is_default: "",
       is_active: "",
       include_deleted: false,
@@ -318,7 +395,7 @@ export default function ByproductsTemplatesPage() {
         throw new Error("Please choose a template file.");
       }
 
-      await ByproductsService.uploadTemplate({
+      await templateApi.upload({
         name: String(uploadForm.name || "").trim(),
         template_code: String(uploadForm.template_code || "").trim(),
         template_type: String(uploadForm.template_type || "").trim(),
@@ -350,7 +427,7 @@ export default function ByproductsTemplatesPage() {
         throw new Error("No template selected for editing.");
       }
 
-      await ByproductsService.updateTemplate(editForm.id, {
+      await templateApi.update(editForm.id, {
         name: String(editForm.name || "").trim(),
         template_code: String(editForm.template_code || "").trim(),
         template_type: String(editForm.template_type || "").trim(),
@@ -376,7 +453,7 @@ export default function ByproductsTemplatesPage() {
     setSuccess("");
 
     try {
-      await ByproductsService.setDefaultTemplate(id);
+      await templateApi.setDefault(id);
       setSuccess("Default template updated successfully.");
       await loadTemplates();
     } catch (err) {
@@ -392,7 +469,7 @@ export default function ByproductsTemplatesPage() {
     setSuccess("");
 
     try {
-      const response = await ByproductsService.refreshTemplatePlaceholders(id);
+      const response = await templateApi.refreshPlaceholders(id);
       const latestList = placeholderListFromPayload(response);
 
       if (latestList.length > 0) {
@@ -417,7 +494,7 @@ export default function ByproductsTemplatesPage() {
     setSuccess("");
 
     try {
-      const response = await ByproductsService.previewTemplatePlaceholders(template.id);
+      const response = await templateApi.previewPlaceholders(template.id);
       const list = placeholderListFromPayload(response);
 
       setSelectedPlaceholderTemplate(template.id);
@@ -447,7 +524,7 @@ export default function ByproductsTemplatesPage() {
     setSuccess("");
 
     try {
-      await ByproductsService.replaceTemplateFile(templateId, file);
+      await templateApi.replaceFile(templateId, file);
       setReplaceFiles((prev) => ({ ...prev, [templateId]: null }));
       setSuccess("Template file replaced successfully.");
       await loadTemplates();
@@ -471,7 +548,7 @@ export default function ByproductsTemplatesPage() {
     setSuccess("");
 
     try {
-      await ByproductsService.deleteTemplate(id);
+      await templateApi.delete(id);
       setSuccess("Template deleted successfully.");
 
       if (selectedPlaceholderTemplate === id) {
@@ -497,7 +574,7 @@ export default function ByproductsTemplatesPage() {
     setSuccess("");
 
     try {
-      await ByproductsService.restoreTemplate(id);
+      await templateApi.restore(id);
       setSuccess("Template restored successfully.");
       await loadTemplates();
     } catch (err) {
@@ -522,8 +599,8 @@ export default function ByproductsTemplatesPage() {
                 <h1 className="pageTitle">Templates</h1>
                 <p className="pageText">
                   Upload, edit, organize, replace, and preview byproducts report
-                  templates. The upload and edit cards stay at the top, while the
-                  template list is placed below them for a cleaner mobile view.
+                  templates. Templates stored in the database are now supported,
+                  so file paths may be empty while the template still works.
                 </p>
               </div>
 
@@ -538,6 +615,11 @@ export default function ByproductsTemplatesPage() {
                   title="Default"
                   value={loading ? "..." : summary.defaultCount}
                   color={BLUE}
+                />
+                <MetricCard
+                  title="Database"
+                  value={loading ? "..." : summary.databaseCount}
+                  color={PURPLE}
                 />
                 <MetricCard
                   title="Placeholders"
@@ -556,7 +638,8 @@ export default function ByproductsTemplatesPage() {
               <div className="sectionHead">
                 <h2 className="sectionTitle">Upload Template</h2>
                 <p className="sectionText">
-                  Add a new template file and its settings.
+                  Add a new template file and its settings. Uploaded templates are
+                  stored in the database automatically.
                 </p>
               </div>
 
@@ -601,11 +684,11 @@ export default function ByproductsTemplatesPage() {
                       }
                       className="fieldInput"
                     >
-                      <option value="daily">daily</option>
-                      <option value="weekly">weekly</option>
-                      <option value="monthly">monthly</option>
-                      <option value="custom">custom</option>
-                      <option value="accumulation">accumulation</option>
+                      {TEMPLATE_TYPE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
                     </select>
                   </div>
 
@@ -621,8 +704,11 @@ export default function ByproductsTemplatesPage() {
                       }
                       className="fieldInput"
                     >
-                      <option value="docx">docx</option>
-                      <option value="html">html</option>
+                      {TEMPLATE_FORMAT_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
                     </select>
                   </div>
                 </div>
@@ -631,11 +717,7 @@ export default function ByproductsTemplatesPage() {
                   <label className="fieldLabel">File</label>
                   <input
                     type="file"
-                    accept={
-                      uploadForm.template_format === "html"
-                        ? ".html,text/html"
-                        : ".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                    }
+                    accept={templateAccept(uploadForm.template_format)}
                     onChange={(e) =>
                       setUploadForm((prev) => ({
                         ...prev,
@@ -716,7 +798,8 @@ export default function ByproductsTemplatesPage() {
               <div className="sectionHead">
                 <h2 className="sectionTitle">Edit Template</h2>
                 <p className="sectionText">
-                  Select a template from the list below, then update it here.
+                  Select a template from the list below, then update its basic
+                  details here.
                 </p>
               </div>
 
@@ -761,11 +844,11 @@ export default function ByproductsTemplatesPage() {
                       }
                       className="fieldInput"
                     >
-                      <option value="daily">daily</option>
-                      <option value="weekly">weekly</option>
-                      <option value="monthly">monthly</option>
-                      <option value="custom">custom</option>
-                      <option value="accumulation">accumulation</option>
+                      {TEMPLATE_TYPE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
                     </select>
                   </div>
 
@@ -781,8 +864,11 @@ export default function ByproductsTemplatesPage() {
                       }
                       className="fieldInput"
                     >
-                      <option value="docx">docx</option>
-                      <option value="html">html</option>
+                      {TEMPLATE_FORMAT_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
                     </select>
                   </div>
                 </div>
@@ -860,7 +946,7 @@ export default function ByproductsTemplatesPage() {
                 <h2 className="sectionTitle">Template List</h2>
                 <p className="sectionText">
                   Search, preview placeholders, replace files, set defaults, and
-                  manage status.
+                  manage status. Database-backed templates may not have a file path.
                 </p>
               </div>
 
@@ -893,11 +979,11 @@ export default function ByproductsTemplatesPage() {
                 className="fieldInput"
               >
                 <option value="">All types</option>
-                <option value="daily">daily</option>
-                <option value="weekly">weekly</option>
-                <option value="monthly">monthly</option>
-                <option value="custom">custom</option>
-                <option value="accumulation">accumulation</option>
+                {TEMPLATE_TYPE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
               </select>
 
               <select
@@ -911,8 +997,28 @@ export default function ByproductsTemplatesPage() {
                 className="fieldInput"
               >
                 <option value="">All formats</option>
-                <option value="docx">docx</option>
-                <option value="html">html</option>
+                {TEMPLATE_FORMAT_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+
+              <select
+                value={filters.storage_backend}
+                onChange={(e) =>
+                  setFilters((prev) => ({
+                    ...prev,
+                    storage_backend: e.target.value,
+                  }))
+                }
+                className="fieldInput"
+              >
+                {STORAGE_OPTIONS.map((option) => (
+                  <option key={option.value || "all"} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
               </select>
 
               <select
@@ -1015,7 +1121,9 @@ export default function ByproductsTemplatesPage() {
                             "Code",
                             "Type",
                             "Format",
+                            "Storage",
                             "File",
+                            "Location",
                             "Size",
                             "Placeholders",
                             "Default",
@@ -1033,9 +1141,13 @@ export default function ByproductsTemplatesPage() {
                           <tr key={template?.id}>
                             <td className="strongCell">{valueText(template?.name)}</td>
                             <td>{valueText(template?.template_code)}</td>
-                            <td>{valueText(template?.template_type)}</td>
-                            <td>{valueText(template?.template_format)}</td>
+                            <td>{humanize(template?.template_type)}</td>
+                            <td>{humanize(template?.template_format)}</td>
+                            <td>
+                              <StoragePill backend={template?.storage_backend} />
+                            </td>
                             <td>{valueText(template?.file_name)}</td>
+                            <td className="mutedCell">{storageLabel(template)}</td>
                             <td>{formatFileSize(template?.file_size_bytes)}</td>
                             <td>{placeholderCount(template)}</td>
                             <td>
@@ -1052,11 +1164,7 @@ export default function ByproductsTemplatesPage() {
                                 <div className="replaceBlock">
                                   <input
                                     type="file"
-                                    accept={
-                                      template?.template_format === "html"
-                                        ? ".html,text/html"
-                                        : ".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                                    }
+                                    accept={templateAccept(template?.template_format)}
                                     onChange={(e) =>
                                       setReplaceFiles((prev) => ({
                                         ...prev,
@@ -1175,6 +1283,7 @@ export default function ByproductsTemplatesPage() {
                           </div>
 
                           <div className="mobilePills">
+                            <StoragePill backend={template?.storage_backend} />
                             <DefaultPill isDefault={template?.is_default} />
                             <StatusPill
                               active={template?.is_active}
@@ -1184,9 +1293,23 @@ export default function ByproductsTemplatesPage() {
                         </div>
 
                         <div className="mobileMetaGrid">
-                          <TemplateMetaRow label="Type" value={valueText(template?.template_type)} />
-                          <TemplateMetaRow label="Format" value={valueText(template?.template_format)} />
-                          <TemplateMetaRow label="File" value={valueText(template?.file_name)} strong />
+                          <TemplateMetaRow
+                            label="Type"
+                            value={humanize(template?.template_type)}
+                          />
+                          <TemplateMetaRow
+                            label="Format"
+                            value={humanize(template?.template_format)}
+                          />
+                          <TemplateMetaRow
+                            label="File"
+                            value={valueText(template?.file_name)}
+                            strong
+                          />
+                          <TemplateMetaRow
+                            label="Storage"
+                            value={storageLabel(template)}
+                          />
                           <TemplateMetaRow
                             label="Size"
                             value={formatFileSize(template?.file_size_bytes)}
@@ -1202,11 +1325,7 @@ export default function ByproductsTemplatesPage() {
                             <div className="replaceLabel">Replace File</div>
                             <input
                               type="file"
-                              accept={
-                                template?.template_format === "html"
-                                  ? ".html,text/html"
-                                  : ".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                              }
+                              accept={templateAccept(template?.template_format)}
                               onChange={(e) =>
                                 setReplaceFiles((prev) => ({
                                   ...prev,
@@ -1221,7 +1340,9 @@ export default function ByproductsTemplatesPage() {
                               disabled={replaceFileId === template?.id}
                               className="secondaryButton mobileFullButton"
                             >
-                              {replaceFileId === template?.id ? "Replacing..." : "Replace File"}
+                              {replaceFileId === template?.id
+                                ? "Replacing..."
+                                : "Replace File"}
                             </button>
                           </div>
                         ) : null}
@@ -1335,7 +1456,7 @@ export default function ByproductsTemplatesPage() {
 
         .heroTop {
           display: grid;
-          grid-template-columns: minmax(0, 1fr) minmax(340px, 480px);
+          grid-template-columns: minmax(0, 1fr) minmax(360px, 560px);
           gap: 18px;
           align-items: start;
         }
@@ -1372,7 +1493,7 @@ export default function ByproductsTemplatesPage() {
 
         .metricsGrid {
           display: grid;
-          grid-template-columns: repeat(4, minmax(0, 1fr));
+          grid-template-columns: repeat(5, minmax(0, 1fr));
           gap: 12px;
           min-width: 0;
         }
@@ -1398,6 +1519,12 @@ export default function ByproductsTemplatesPage() {
           font-weight: 800;
           color: ${TEXT};
           word-break: break-word;
+        }
+
+        .metricHint {
+          margin-top: 6px;
+          color: ${MUTED};
+          font-size: 11px;
         }
 
         .banner {
@@ -1686,7 +1813,7 @@ export default function ByproductsTemplatesPage() {
 
         .dataTable {
           width: 100%;
-          min-width: 1320px;
+          min-width: 1500px;
           border-collapse: collapse;
           background: #ffffff;
         }
@@ -1715,6 +1842,12 @@ export default function ByproductsTemplatesPage() {
 
         .strongCell {
           font-weight: 800;
+        }
+
+        .mutedCell {
+          color: ${MUTED};
+          min-width: 220px;
+          word-break: break-word;
         }
 
         .replaceBlock {
@@ -1854,13 +1987,13 @@ export default function ByproductsTemplatesPage() {
           display: none;
         }
 
-        @media (max-width: 1180px) {
+        @media (max-width: 1240px) {
           .heroTop {
             grid-template-columns: 1fr;
           }
 
           .metricsGrid {
-            grid-template-columns: repeat(4, minmax(0, 1fr));
+            grid-template-columns: repeat(5, minmax(0, 1fr));
           }
 
           .filtersGrid {

@@ -16,7 +16,27 @@ const GREEN = "#16a34a";
 const GREEN_SOFT = "rgba(22,163,74,0.10)";
 const RED = "#dc2626";
 const RED_SOFT = "rgba(220,38,38,0.10)";
+const PURPLE = "#7c3aed";
+const PURPLE_SOFT = "rgba(124,58,237,0.10)";
 const SHADOW = "0 10px 30px rgba(15, 23, 42, 0.06)";
+
+const REPORT_TYPE_OPTIONS = [
+  { value: "daily", label: "Daily" },
+  { value: "weekly", label: "Weekly" },
+  { value: "monthly", label: "Monthly" },
+  { value: "custom_period", label: "Custom Period" },
+  { value: "accumulation", label: "Accumulation" },
+];
+
+const GROUP_BY_OPTIONS = [
+  { value: "", label: "No grouping" },
+  { value: "day", label: "Day" },
+  { value: "week", label: "Week" },
+  { value: "month", label: "Month" },
+  { value: "customer", label: "Customer" },
+  { value: "byproduct", label: "Byproduct" },
+  { value: "category", label: "Category" },
+];
 
 function coerceItems(response) {
   if (Array.isArray(response)) return response;
@@ -26,6 +46,8 @@ function coerceItems(response) {
   if (Array.isArray(response?.data?.rows)) return response.data.rows;
   if (Array.isArray(response?.points)) return response.points;
   if (Array.isArray(response?.data?.points)) return response.data.points;
+  if (Array.isArray(response?.grouped_rows)) return response.grouped_rows;
+  if (Array.isArray(response?.data?.grouped_rows)) return response.data.grouped_rows;
   if (Array.isArray(response?.data)) return response.data;
   return [];
 }
@@ -89,8 +111,19 @@ function getPrimitiveKeys(list = []) {
 
   list.slice(0, 20).forEach((item) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) return;
+
     Object.entries(item).forEach(([key, value]) => {
-      if (isPrimitive(value)) {
+      if (
+        isPrimitive(value) &&
+        ![
+          "id",
+          "sale_id",
+          "sale_line_id",
+          "customer_id",
+          "byproduct_id",
+          "category_id",
+        ].includes(key)
+      ) {
         seen.add(key);
       }
     });
@@ -197,6 +230,13 @@ function getInitialFilters() {
   };
 }
 
+function reportTypeLabel(value) {
+  return (
+    REPORT_TYPE_OPTIONS.find((item) => item.value === value)?.label ||
+    formatValue(value)
+  );
+}
+
 function reportPeriodText(report, filters) {
   const period = report?.period || report?.data?.period || null;
 
@@ -261,26 +301,6 @@ function getTotals(report) {
   return {};
 }
 
-function getSummaryList(response) {
-  return coerceItems(response);
-}
-
-function getTrendPoints(response) {
-  return coerceItems(response);
-}
-
-function getMainReportPayload(filters) {
-  return {
-    customer_id: filters.customer_id || undefined,
-    byproduct_id: filters.byproduct_id || undefined,
-    category_id: filters.category_id || undefined,
-    include_void: filters.include_void,
-    include_deleted: filters.include_deleted,
-    group_by: filters.group_by || undefined,
-    search: filters.search || undefined,
-  };
-}
-
 function getResolvedRange(filters) {
   if (filters.report_type === "daily") {
     return {
@@ -303,60 +323,38 @@ function getResolvedRange(filters) {
   };
 }
 
+function getMainReportPayload(filters) {
+  return {
+    customer_id: filters.customer_id || undefined,
+    byproduct_id: filters.byproduct_id || undefined,
+    category_id: filters.category_id || undefined,
+    include_void: filters.include_void,
+    include_deleted: filters.include_deleted,
+    group_by: filters.group_by || undefined,
+    search: filters.search || undefined,
+  };
+}
+
 function getReportFilterForGeneration(filters) {
   const base = getMainReportPayload(filters);
-
-  if (filters.report_type === "daily") {
-    const date = filters.report_date || todayIso();
-
-    return {
-      report_type: "daily",
-      date_from: date,
-      date_to: date,
-      ...base,
-    };
-  }
-
-  if (filters.report_type === "weekly") {
-    const range = getWeekRange(filters.target_date);
-
-    return {
-      report_type: "weekly",
-      date_from: range.date_from,
-      date_to: range.date_to,
-      ...base,
-    };
-  }
-
-  if (filters.report_type === "monthly") {
-    const range = getMonthRange(filters.year, filters.month);
-
-    return {
-      report_type: "monthly",
-      date_from: range.date_from,
-      date_to: range.date_to,
-      ...base,
-    };
-  }
-
-  if (filters.report_type === "custom_period") {
-    return {
-      report_type: "custom_period",
-      date_from: filters.date_from || "",
-      date_to: filters.date_to || "",
-      ...base,
-    };
-  }
+  const range = getResolvedRange(filters);
 
   return {
-    report_type: "accumulation",
-    date_from: filters.date_from || "",
-    date_to: filters.date_to || "",
+    report_type: filters.report_type,
+    date_from: range.date_from,
+    date_to: range.date_to,
     ...base,
   };
 }
 
-function ReportMetricCard({ title, value, color = TEXT }) {
+function templateStorageLabel(template) {
+  if (!template) return "No default template";
+  if (template.storage_label) return template.storage_label;
+  if (template.storage_backend === "database") return "Stored in database";
+  return template.file_path || "Stored on disk";
+}
+
+function ReportMetricCard({ title, value, color = TEXT, hint }) {
   return (
     <div
       style={{
@@ -374,15 +372,19 @@ function ReportMetricCard({ title, value, color = TEXT }) {
           fontWeight: 800,
           marginTop: 6,
           lineHeight: 1.1,
+          wordBreak: "break-word",
         }}
       >
         {value}
       </div>
+      {hint ? (
+        <div style={{ marginTop: 6, color: MUTED, fontSize: 11 }}>{hint}</div>
+      ) : null}
     </div>
   );
 }
 
-function StatusBadge({ label }) {
+function StatusBadge({ label, background = ORANGE_SOFT, color = ORANGE_DEEP }) {
   return (
     <span
       style={{
@@ -390,8 +392,8 @@ function StatusBadge({ label }) {
         alignItems: "center",
         padding: "6px 10px",
         borderRadius: 999,
-        background: ORANGE_SOFT,
-        color: ORANGE_DEEP,
+        background,
+        color,
         fontSize: 12,
         fontWeight: 800,
       }}
@@ -401,7 +403,35 @@ function StatusBadge({ label }) {
   );
 }
 
+function StorageBadge({ template }) {
+  if (!template) {
+    return (
+      <StatusBadge
+        label="No default template"
+        background={RED_SOFT}
+        color={RED}
+      />
+    );
+  }
+
+  const isDatabase = template.storage_backend === "database";
+
+  return (
+    <StatusBadge
+      label={isDatabase ? "Database Template" : "Disk Template"}
+      background={isDatabase ? PURPLE_SOFT : BLUE_SOFT}
+      color={isDatabase ? PURPLE : BLUE}
+    />
+  );
+}
+
 export default function ByproductsReportsPage() {
+  const categoriesApi = ByproductsService.categories || ByproductsService;
+  const itemsApi = ByproductsService.items || ByproductsService;
+  const customersApi = ByproductsService.customers || ByproductsService;
+  const reportsApi = ByproductsService.reports || ByproductsService;
+  const templatesApi = ByproductsService.templates || ByproductsService;
+
   const [filters, setFilters] = useState(getInitialFilters());
   const [customers, setCustomers] = useState([]);
   const [items, setItems] = useState([]);
@@ -415,9 +445,11 @@ export default function ByproductsReportsPage() {
   const [trendPoints, setTrendPoints] = useState([]);
   const [compareData, setCompareData] = useState(null);
   const [lastGeneratedDocument, setLastGeneratedDocument] = useState(null);
+  const [defaultTemplate, setDefaultTemplate] = useState(null);
 
   const [screenWidth, setScreenWidth] = useState(1280);
   const [loadingLookups, setLoadingLookups] = useState(true);
+  const [loadingDefaultTemplate, setLoadingDefaultTemplate] = useState(false);
   const [runningReport, setRunningReport] = useState(false);
   const [loadingDashboard, setLoadingDashboard] = useState(false);
   const [loadingSummaries, setLoadingSummaries] = useState(false);
@@ -454,9 +486,9 @@ export default function ByproductsReportsPage() {
 
     try {
       const [customersResponse, itemsResponse, categoriesResponse] = await Promise.all([
-        ByproductsService.getCustomerSelection(),
-        ByproductsService.getItemSelection(),
-        ByproductsService.getCategorySelection(),
+        customersApi.getSelection(),
+        itemsApi.getSelection(),
+        categoriesApi.getSelection(),
       ]);
 
       setCustomers(coerceItems(customersResponse));
@@ -467,11 +499,28 @@ export default function ByproductsReportsPage() {
     } finally {
       setLoadingLookups(false);
     }
-  }, []);
+  }, [categoriesApi, customersApi, itemsApi]);
+
+  const loadDefaultTemplate = useCallback(async () => {
+    setLoadingDefaultTemplate(true);
+
+    try {
+      const response = await templatesApi.getDefault(filters.report_type);
+      setDefaultTemplate(response || null);
+    } catch {
+      setDefaultTemplate(null);
+    } finally {
+      setLoadingDefaultTemplate(false);
+    }
+  }, [filters.report_type, templatesApi]);
 
   useEffect(() => {
     loadLookups();
   }, [loadLookups]);
+
+  useEffect(() => {
+    loadDefaultTemplate();
+  }, [loadDefaultTemplate]);
 
   const rows = useMemo(() => getReportRows(reportData), [reportData]);
   const groupedRows = useMemo(() => getGroupedRows(reportData), [reportData]);
@@ -498,9 +547,9 @@ export default function ByproductsReportsPage() {
         value: formatValue(totals.transaction_count),
         color: TEXT,
       },
-      { title: "Customers", value: formatValue(totals.customer_count), color: BLUE },
+      { title: "Customers", value: formatValue(totals.customer_count), color: PURPLE },
     ];
-  }, [rows.length, groupedRows.length, totals]);
+  }, [groupedRows.length, rows.length, totals]);
 
   const dashboardCards = useMemo(() => {
     const metrics = flattenMetrics(dashboardData || {}).filter(
@@ -548,29 +597,29 @@ export default function ByproductsReportsPage() {
       let response;
 
       if (filters.report_type === "daily") {
-        response = await ByproductsService.getDailyReport({
+        response = await reportsApi.getDaily({
           report_date: filters.report_date,
           ...base,
         });
       } else if (filters.report_type === "weekly") {
-        response = await ByproductsService.getWeeklyReport({
+        response = await reportsApi.getWeekly({
           target_date: filters.target_date,
           ...base,
         });
       } else if (filters.report_type === "monthly") {
-        response = await ByproductsService.getMonthlyReport({
+        response = await reportsApi.getMonthly({
           month: Number(filters.month),
           year: Number(filters.year),
           ...base,
         });
       } else if (filters.report_type === "custom_period") {
-        response = await ByproductsService.getCustomPeriodReport({
+        response = await reportsApi.getCustom({
           date_from: filters.date_from,
           date_to: filters.date_to,
           ...base,
         });
       } else {
-        response = await ByproductsService.getAccumulationReport({
+        response = await reportsApi.getAccumulation({
           date_from: filters.date_from,
           date_to: filters.date_to,
           ...base,
@@ -595,11 +644,15 @@ export default function ByproductsReportsPage() {
     setSuccess("");
 
     try {
-      const template = await ByproductsService.getDefaultTemplate(filters.report_type);
+      let template = defaultTemplate;
+
+      if (!template?.id) {
+        template = await templatesApi.getDefault(filters.report_type);
+      }
 
       if (!template?.id) {
         throw new Error(
-          `No default ${filters.report_type} template was found. Set a default template first.`
+          `No default ${reportTypeLabel(filters.report_type).toLowerCase()} template was found. Set a default template first.`
         );
       }
 
@@ -613,14 +666,9 @@ export default function ByproductsReportsPage() {
         report_filter: getReportFilterForGeneration(filters),
       };
 
-      const generated = await ByproductsService.generateReportDocument(payload);
+      const generated = await templatesApi.generateDocument(payload);
       setLastGeneratedDocument(generated);
-
-      if (isPdf) {
-        await ByproductsService.downloadGeneratedDocument(generated);
-      } else {
-        await ByproductsService.downloadGeneratedDocument(generated);
-      }
+      await templatesApi.downloadGeneratedDocument(generated);
 
       setSuccess(`${generated?.file_name || "Document"} generated successfully.`);
     } catch (err) {
@@ -641,8 +689,10 @@ export default function ByproductsReportsPage() {
 
     setOpeningLastFile(true);
     try {
-      await ByproductsService.openGeneratedDocument(lastGeneratedDocument);
-      setSuccess(`${lastGeneratedDocument.file_name || "Document"} opened successfully.`);
+      await templatesApi.openGeneratedDocument(lastGeneratedDocument);
+      setSuccess(
+        `${lastGeneratedDocument.file_name || "Document"} opened successfully.`
+      );
     } catch (err) {
       setError(err?.message || "Failed to open the generated file.");
     } finally {
@@ -663,7 +713,7 @@ export default function ByproductsReportsPage() {
     setSuccess("");
 
     try {
-      const response = await ByproductsService.getDashboard({
+      const response = await reportsApi.getDashboard({
         date_from: range.date_from,
         date_to: range.date_to,
       });
@@ -691,26 +741,26 @@ export default function ByproductsReportsPage() {
 
     try {
       const [customerResp, byproductResp, categoryResp] = await Promise.all([
-        ByproductsService.getCustomerSummary({
+        reportsApi.getCustomerSummary({
           date_from: range.date_from,
           date_to: range.date_to,
           customer_id: filters.customer_id || undefined,
         }),
-        ByproductsService.getByproductSummary({
+        reportsApi.getByproductSummary({
           date_from: range.date_from,
           date_to: range.date_to,
           category_id: filters.category_id || undefined,
           byproduct_id: filters.byproduct_id || undefined,
         }),
-        ByproductsService.getCategorySummary({
+        reportsApi.getCategorySummary({
           date_from: range.date_from,
           date_to: range.date_to,
         }),
       ]);
 
-      setCustomerSummary(getSummaryList(customerResp));
-      setByproductSummary(getSummaryList(byproductResp));
-      setCategorySummary(getSummaryList(categoryResp));
+      setCustomerSummary(coerceItems(customerResp));
+      setByproductSummary(coerceItems(byproductResp));
+      setCategorySummary(coerceItems(categoryResp));
       setSuccess("Summaries loaded successfully.");
     } catch (err) {
       setError(err?.message || "Failed to load summaries.");
@@ -732,17 +782,14 @@ export default function ByproductsReportsPage() {
     setSuccess("");
 
     try {
-      const response = await ByproductsService.getTrendReport({
+      const response = await reportsApi.getTrend({
         interval:
           filters.report_type === "monthly"
             ? "week"
             : filters.report_type === "weekly"
             ? "day"
             : "day",
-        report_type:
-          filters.report_type === "custom_period"
-            ? "custom_period"
-            : filters.report_type,
+        report_type: filters.report_type,
         date_from: range.date_from,
         date_to: range.date_to,
         customer_id: filters.customer_id || undefined,
@@ -754,7 +801,7 @@ export default function ByproductsReportsPage() {
         search: filters.search || undefined,
       });
 
-      setTrendPoints(getTrendPoints(response));
+      setTrendPoints(coerceItems(response));
       setSuccess("Trend report loaded successfully.");
     } catch (err) {
       setError(err?.message || "Failed to load trend report.");
@@ -776,11 +823,8 @@ export default function ByproductsReportsPage() {
     setSuccess("");
 
     try {
-      const response = await ByproductsService.compareWithPreviousPeriod({
-        report_type:
-          filters.report_type === "custom_period"
-            ? "custom_period"
-            : filters.report_type,
+      const response = await reportsApi.compare({
+        report_type: filters.report_type,
         date_from: range.date_from,
         date_to: range.date_to,
         customer_id: filters.customer_id || undefined,
@@ -895,6 +939,37 @@ export default function ByproductsReportsPage() {
                   reports. Download buttons generate the file using the default
                   template for the current report type.
                 </p>
+
+                <div
+                  style={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: 8,
+                    marginTop: 14,
+                    alignItems: "center",
+                  }}
+                >
+                  <StorageBadge template={defaultTemplate} />
+                  <StatusBadge
+                    label={
+                      loadingDefaultTemplate
+                        ? "Loading template..."
+                        : defaultTemplate?.file_name
+                        ? `${defaultTemplate.file_name} · ${templateStorageLabel(
+                            defaultTemplate
+                          )}`
+                        : "No default template set"
+                    }
+                    background={
+                      defaultTemplate?.storage_backend === "database"
+                        ? PURPLE_SOFT
+                        : BLUE_SOFT
+                    }
+                    color={
+                      defaultTemplate?.storage_backend === "database" ? PURPLE : BLUE
+                    }
+                  />
+                </div>
               </div>
 
               <div
@@ -902,10 +977,10 @@ export default function ByproductsReportsPage() {
                   display: "grid",
                   gridTemplateColumns: isMobile
                     ? "repeat(2, minmax(0, 1fr))"
-                    : "repeat(4, minmax(120px, 1fr))",
+                    : "repeat(5, minmax(120px, 1fr))",
                   gap: 12,
                   width: isMobile ? "100%" : "auto",
-                  minWidth: isMobile ? 0 : 480,
+                  minWidth: isMobile ? 0 : 620,
                 }}
               >
                 <ReportMetricCard
@@ -924,13 +999,18 @@ export default function ByproductsReportsPage() {
                   color={GREEN}
                 />
                 <ReportMetricCard
+                  title="Report Type"
+                  value={reportTypeLabel(filters.report_type)}
+                  color={ORANGE_DEEP}
+                />
+                <ReportMetricCard
                   title="Period"
                   value={
                     reportData
                       ? reportPeriodText(reportData, filters)
-                      : filters.report_type
+                      : reportPeriodText(null, filters)
                   }
-                  color={ORANGE_DEEP}
+                  color={PURPLE}
                 />
               </div>
             </div>
@@ -947,19 +1027,7 @@ export default function ByproductsReportsPage() {
                 type="button"
                 onClick={() => generateDocument("pdf")}
                 disabled={generatingPdf}
-                style={{
-                  minHeight: 44,
-                  padding: "0 16px",
-                  borderRadius: 12,
-                  border: "none",
-                  background: ORANGE,
-                  color: "#fff",
-                  fontSize: 14,
-                  fontWeight: 800,
-                  cursor: generatingPdf ? "not-allowed" : "pointer",
-                  opacity: generatingPdf ? 0.7 : 1,
-                  width: isMobile ? "100%" : "auto",
-                }}
+                style={primaryBtn(isMobile, generatingPdf)}
               >
                 {generatingPdf ? "Generating PDF..." : "Download PDF"}
               </button>
@@ -968,40 +1036,16 @@ export default function ByproductsReportsPage() {
                 type="button"
                 onClick={() => generateDocument("source")}
                 disabled={generatingSource}
-                style={{
-                  minHeight: 44,
-                  padding: "0 16px",
-                  borderRadius: 12,
-                  border: `1px solid ${BORDER}`,
-                  background: SURFACE,
-                  color: TEXT,
-                  fontSize: 14,
-                  fontWeight: 800,
-                  cursor: generatingSource ? "not-allowed" : "pointer",
-                  opacity: generatingSource ? 0.7 : 1,
-                  width: isMobile ? "100%" : "auto",
-                }}
+                style={secondaryBtn(isMobile, generatingSource)}
               >
-                {generatingSource ? "Generating..." : "Download Document"}
+                {generatingSource ? "Generating..." : "Download Source File"}
               </button>
 
               <button
                 type="button"
                 onClick={handleOpenLastGeneratedFile}
                 disabled={openingLastFile}
-                style={{
-                  minHeight: 44,
-                  padding: "0 16px",
-                  borderRadius: 12,
-                  border: `1px solid ${BORDER}`,
-                  background: SURFACE,
-                  color: TEXT,
-                  fontSize: 14,
-                  fontWeight: 800,
-                  cursor: openingLastFile ? "not-allowed" : "pointer",
-                  opacity: openingLastFile ? 0.7 : 1,
-                  width: isMobile ? "100%" : "auto",
-                }}
+                style={secondaryBtn(isMobile, openingLastFile)}
               >
                 {openingLastFile ? "Opening..." : "Open Last Generated File"}
               </button>
@@ -1111,19 +1155,7 @@ export default function ByproductsReportsPage() {
                   type="button"
                   onClick={handleRunReport}
                   disabled={runningReport}
-                  style={{
-                    minHeight: 44,
-                    padding: "0 16px",
-                    borderRadius: 12,
-                    border: "none",
-                    background: ORANGE,
-                    color: "#fff",
-                    fontSize: 14,
-                    fontWeight: 800,
-                    cursor: runningReport ? "not-allowed" : "pointer",
-                    opacity: runningReport ? 0.7 : 1,
-                    width: isMobile ? "100%" : "auto",
-                  }}
+                  style={primaryBtn(isMobile, runningReport)}
                 >
                   {runningReport ? "Running..." : "Run Report"}
                 </button>
@@ -1131,18 +1163,7 @@ export default function ByproductsReportsPage() {
                 <button
                   type="button"
                   onClick={clearPage}
-                  style={{
-                    minHeight: 44,
-                    padding: "0 16px",
-                    borderRadius: 12,
-                    border: `1px solid ${BORDER}`,
-                    background: SURFACE,
-                    color: TEXT,
-                    fontSize: 14,
-                    fontWeight: 800,
-                    cursor: "pointer",
-                    width: isMobile ? "100%" : "auto",
-                  }}
+                  style={secondaryBtn(isMobile, false)}
                 >
                   Clear
                 </button>
@@ -1168,11 +1189,11 @@ export default function ByproductsReportsPage() {
                   }
                   style={inputStyle}
                 >
-                  <option value="daily">daily</option>
-                  <option value="weekly">weekly</option>
-                  <option value="monthly">monthly</option>
-                  <option value="custom_period">custom period</option>
-                  <option value="accumulation">accumulation</option>
+                  {REPORT_TYPE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
                 </select>
               </div>
 
@@ -1362,13 +1383,11 @@ export default function ByproductsReportsPage() {
                   }
                   style={inputStyle}
                 >
-                  <option value="">No grouping</option>
-                  <option value="day">day</option>
-                  <option value="week">week</option>
-                  <option value="month">month</option>
-                  <option value="customer">customer</option>
-                  <option value="byproduct">byproduct</option>
-                  <option value="category">category</option>
+                  {GROUP_BY_OPTIONS.map((option) => (
+                    <option key={option.value || "none"} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
                 </select>
               </div>
 
@@ -1387,21 +1406,7 @@ export default function ByproductsReportsPage() {
                 />
               </div>
 
-              <label
-                style={{
-                  minHeight: 44,
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                  padding: "0 12px",
-                  borderRadius: 12,
-                  border: `1px solid ${BORDER}`,
-                  background: "#fff",
-                  color: TEXT,
-                  fontSize: 13,
-                  fontWeight: 700,
-                }}
-              >
+              <label style={checkStyle}>
                 <input
                   type="checkbox"
                   checked={filters.include_void}
@@ -1415,21 +1420,7 @@ export default function ByproductsReportsPage() {
                 Include void
               </label>
 
-              <label
-                style={{
-                  minHeight: 44,
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                  padding: "0 12px",
-                  borderRadius: 12,
-                  border: `1px solid ${BORDER}`,
-                  background: "#fff",
-                  color: TEXT,
-                  fontSize: 13,
-                  fontWeight: 700,
-                }}
-              >
+              <label style={checkStyle}>
                 <input
                   type="checkbox"
                   checked={filters.include_deleted}
@@ -1567,7 +1558,7 @@ export default function ByproductsReportsPage() {
                   type="button"
                   onClick={handleLoadDashboard}
                   disabled={loadingDashboard}
-                  style={secondaryBtn(isMobile)}
+                  style={secondaryBtn(isMobile, loadingDashboard)}
                 >
                   {loadingDashboard ? "Loading..." : "Load Dashboard"}
                 </button>
@@ -1576,7 +1567,7 @@ export default function ByproductsReportsPage() {
                   type="button"
                   onClick={handleLoadSummaries}
                   disabled={loadingSummaries}
-                  style={secondaryBtn(isMobile)}
+                  style={secondaryBtn(isMobile, loadingSummaries)}
                 >
                   {loadingSummaries ? "Loading..." : "Load Summaries"}
                 </button>
@@ -1585,7 +1576,7 @@ export default function ByproductsReportsPage() {
                   type="button"
                   onClick={handleLoadTrend}
                   disabled={loadingTrend}
-                  style={secondaryBtn(isMobile)}
+                  style={secondaryBtn(isMobile, loadingTrend)}
                 >
                   {loadingTrend ? "Loading..." : "Load Trend"}
                 </button>
@@ -1594,7 +1585,7 @@ export default function ByproductsReportsPage() {
                   type="button"
                   onClick={handleCompare}
                   disabled={loadingCompare}
-                  style={secondaryBtn(isMobile)}
+                  style={secondaryBtn(isMobile, loadingCompare)}
                 >
                   {loadingCompare ? "Loading..." : "Compare"}
                 </button>
@@ -1621,18 +1612,7 @@ export default function ByproductsReportsPage() {
                 ))}
               </div>
             ) : (
-              <div
-                style={{
-                  border: `1px dashed ${BORDER}`,
-                  borderRadius: 16,
-                  padding: "18px 14px",
-                  color: MUTED,
-                  fontSize: 14,
-                  textAlign: "center",
-                }}
-              >
-                No dashboard metrics loaded yet.
-              </div>
+              <EmptyState text="No dashboard metrics loaded yet." />
             )}
           </section>
 
@@ -2159,7 +2139,23 @@ function EmptyState({ text }) {
   );
 }
 
-function secondaryBtn(isMobile) {
+function primaryBtn(isMobile, disabled) {
+  return {
+    minHeight: 44,
+    padding: "0 16px",
+    borderRadius: 12,
+    border: "none",
+    background: ORANGE,
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: 800,
+    cursor: disabled ? "not-allowed" : "pointer",
+    opacity: disabled ? 0.7 : 1,
+    width: isMobile ? "100%" : "auto",
+  };
+}
+
+function secondaryBtn(isMobile, disabled) {
   return {
     minHeight: 40,
     padding: "0 14px",
@@ -2169,7 +2165,8 @@ function secondaryBtn(isMobile) {
     color: TEXT,
     fontSize: 13,
     fontWeight: 800,
-    cursor: "pointer",
+    cursor: disabled ? "not-allowed" : "pointer",
+    opacity: disabled ? 0.7 : 1,
     width: isMobile ? "100%" : "auto",
   };
 }
@@ -2193,6 +2190,20 @@ const labelStyle = {
   fontSize: 13,
   fontWeight: 700,
   marginBottom: 6,
+};
+
+const checkStyle = {
+  minHeight: 44,
+  display: "flex",
+  alignItems: "center",
+  gap: 10,
+  padding: "0 12px",
+  borderRadius: 12,
+  border: `1px solid ${BORDER}`,
+  background: "#fff",
+  color: TEXT,
+  fontSize: 13,
+  fontWeight: 700,
 };
 
 const tableHeadStyle = {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import mimetypes
+import os
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,7 @@ from app.models.byproducts import (
     ByproductPaymentMode,
     ByproductSaleStatus,
     ByproductTemplateFormat,
+    ByproductTemplateStorageBackend,
     ByproductTemplateType,
     ByproductUnit,
 )
@@ -127,10 +129,13 @@ from app.services.byproducts_template_service import (
 router = APIRouter(prefix="/byproducts", tags=["Byproducts"])
 
 BASE_DIR = Path(__file__).resolve().parents[2]
-GENERATED_DIR = BASE_DIR / "storage" / "byproducts" / "generated"
+BYPRODUCT_STORAGE_ROOT = Path(
+    os.getenv("BYPRODUCT_STORAGE_ROOT", str(BASE_DIR / "storage" / "byproducts"))
+).resolve()
+GENERATED_DIR = BYPRODUCT_STORAGE_ROOT / "generated"
 
 
-def _actor_id(current_user: User | None) -> UUID | None:
+def _actor_id(current_user: User | None) -> int | None:
     return getattr(current_user, "id", None)
 
 
@@ -147,11 +152,11 @@ def _resolve_generated_file(file_name: str) -> Path:
 
     try:
         target.relative_to(generated_root)
-    except ValueError:
+    except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid generated file path",
-        )
+        ) from exc
 
     if not target.exists() or not target.is_file():
         raise HTTPException(
@@ -170,11 +175,11 @@ def _resolve_generated_file(file_name: str) -> Path:
 @router.get("/generated/download")
 def download_generated_byproduct_file(
     file_name: str = Query(..., min_length=1),
-    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
+    _ = current_user
     file_path = _resolve_generated_file(file_name)
-    media_type, _ = mimetypes.guess_type(str(file_path))
+    media_type, _encoding = mimetypes.guess_type(str(file_path))
     return FileResponse(
         path=str(file_path),
         filename=file_path.name,
@@ -213,6 +218,7 @@ def list_byproduct_categories(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
+    _ = current_user
     filters = ByproductCategoryFilter(
         search=search,
         is_active=is_active,
@@ -229,6 +235,7 @@ def get_byproduct_category_selection(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
+    _ = current_user
     return get_active_categories_for_selection(db)
 
 
@@ -241,6 +248,7 @@ def read_byproduct_category(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
+    _ = current_user
     return get_category(db, category_id)
 
 
@@ -314,6 +322,7 @@ def list_byproduct_items(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
+    _ = current_user
     filters = ByproductItemFilter(
         search=search,
         category_id=category_id,
@@ -332,6 +341,7 @@ def get_byproduct_item_selection(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
+    _ = current_user
     return get_active_items_for_selection(db)
 
 
@@ -344,6 +354,7 @@ def read_byproduct_item(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
+    _ = current_user
     return get_item(db, item_id)
 
 
@@ -419,6 +430,7 @@ def list_byproduct_customers(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
+    _ = current_user
     filters = ByproductCustomerFilter(
         search=search,
         customer_type=customer_type,
@@ -439,6 +451,7 @@ def get_byproduct_customer_selection(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
+    _ = current_user
     return get_active_customers_for_selection(db)
 
 
@@ -451,6 +464,7 @@ def read_byproduct_customer(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
+    _ = current_user
     return get_customer(db, customer_id)
 
 
@@ -528,6 +542,7 @@ def list_byproduct_sales(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
+    _ = current_user
     filters = ByproductSaleFilter(
         search=search,
         sale_date_from=sale_date_from,
@@ -551,6 +566,7 @@ def read_byproduct_sale(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
+    _ = current_user
     return get_sale(db, sale_id)
 
 
@@ -631,6 +647,7 @@ def query_byproduct_report(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
+    _ = current_user
     return build_report(db, payload)
 
 
@@ -650,6 +667,7 @@ def daily_byproduct_report(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
+    _ = current_user
     return get_daily_report(
         db,
         report_date,
@@ -679,6 +697,7 @@ def weekly_byproduct_report(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
+    _ = current_user
     return get_weekly_report(
         db,
         target_date,
@@ -709,6 +728,7 @@ def monthly_byproduct_report(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
+    _ = current_user
     return get_monthly_report(
         db,
         year,
@@ -740,6 +760,7 @@ def custom_period_byproduct_report(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
+    _ = current_user
     return get_custom_period_report(
         db,
         date_from,
@@ -771,6 +792,7 @@ def accumulation_byproduct_report(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
+    _ = current_user
     return get_accumulation_report(
         db,
         date_from,
@@ -795,6 +817,7 @@ def byproduct_trend_report(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
+    _ = current_user
     return get_trend_report(db, payload, interval=interval)
 
 
@@ -807,6 +830,7 @@ def compare_byproduct_report_with_previous_period(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
+    _ = current_user
     return compare_with_previous_period(db, payload)
 
 
@@ -820,6 +844,7 @@ def byproduct_dashboard(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
+    _ = current_user
     return get_dashboard_summary(db, date_from=date_from, date_to=date_to)
 
 
@@ -834,6 +859,7 @@ def byproduct_customer_summary(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
+    _ = current_user
     return get_customer_summary(
         db,
         date_from=date_from,
@@ -854,6 +880,7 @@ def byproduct_item_summary(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
+    _ = current_user
     return get_byproduct_summary(
         db,
         date_from=date_from,
@@ -873,6 +900,7 @@ def byproduct_category_summary(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
+    _ = current_user
     return get_category_summary(db, date_from=date_from, date_to=date_to)
 
 
@@ -933,6 +961,7 @@ def list_byproduct_templates(
     search: str | None = Query(default=None),
     template_type: ByproductTemplateType | None = Query(default=None),
     template_format: ByproductTemplateFormat | None = Query(default=None),
+    storage_backend: ByproductTemplateStorageBackend | None = Query(default=None),
     is_default: bool | None = Query(default=None),
     is_active: bool | None = Query(default=None),
     include_deleted: bool = Query(default=False),
@@ -941,10 +970,12 @@ def list_byproduct_templates(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
+    _ = current_user
     filters = ByproductReportTemplateFilter(
         search=search,
         template_type=template_type,
         template_format=template_format,
+        storage_backend=storage_backend,
         is_default=is_default,
         is_active=is_active,
         include_deleted=include_deleted,
@@ -961,7 +992,32 @@ def get_default_byproduct_template(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
+    _ = current_user
     return get_default_template_for_type(db, template_type)
+
+
+@router.post(
+    "/templates/generate",
+    response_model=ByproductGeneratedDocumentResponse,
+)
+def generate_byproduct_report_document(
+    payload: ByproductGenerateReportDocumentRequest,
+    company_name: str | None = Query(default=None),
+    company_address: str | None = Query(default=None),
+    company_phone: str | None = Query(default=None),
+    report_title: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    _ = current_user
+    return generate_report_document(
+        db,
+        payload,
+        company_name=company_name,
+        company_address=company_address,
+        company_phone=company_phone,
+        report_title=report_title,
+    )
 
 
 @router.get(
@@ -973,6 +1029,7 @@ def read_byproduct_template(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
+    _ = current_user
     return get_template(db, template_id)
 
 
@@ -1070,27 +1127,5 @@ def preview_byproduct_template_placeholders(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
+    _ = current_user
     return preview_template_placeholders(db, template_id)
-
-
-@router.post(
-    "/templates/generate",
-    response_model=ByproductGeneratedDocumentResponse,
-)
-def generate_byproduct_report_document(
-    payload: ByproductGenerateReportDocumentRequest,
-    company_name: str | None = Query(default=None),
-    company_address: str | None = Query(default=None),
-    company_phone: str | None = Query(default=None),
-    report_title: str | None = Query(default=None),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user),
-):
-    return generate_report_document(
-        db,
-        payload,
-        company_name=company_name,
-        company_address=company_address,
-        company_phone=company_phone,
-        report_title=report_title,
-    )
