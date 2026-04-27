@@ -34,41 +34,67 @@ THOUSAND = Decimal("1000")
 
 
 # =============================================================================
-# Core helpers
+# CVP ASSUMPTIONS
+# =============================================================================
+# Commercial selling price used to calculate booked and delivered turnover.
+SELLING_PRICE_USD_PER_KG = Decimal("5.40")
+
+# CVP GP / contribution basis.
+# CVP model: 1 small-stock head averages 9kg and gives USD 5.20 GP/contribution.
+CVP_AVERAGE_KG_PER_HEAD = Decimal("9")
+CVP_GP_USD_PER_HEAD = Decimal("5.20")
+
+# Equivalent CVP GP / contribution rates.
+CVP_GP_USD_PER_KG = CVP_GP_USD_PER_HEAD / CVP_AVERAGE_KG_PER_HEAD
+CVP_GP_USD_PER_TONNE = CVP_GP_USD_PER_KG * THOUSAND
+
+
+# =============================================================================
+# CORE HELPERS
 # =============================================================================
 def normalize_text(value: Optional[str]) -> Optional[str]:
     if value is None:
         return None
-    value = value.strip()
+
+    value = str(value).strip()
     return value or None
 
 
 def quantize_2(value: Union[Decimal, int, float, str, None]) -> Decimal:
     if value is None or value == "":
         return DECIMAL_ZERO_2
+
     return Decimal(str(value)).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
 
 
 def quantize_4(value: Union[Decimal, int, float, str, None]) -> Decimal:
     if value is None or value == "":
         return DECIMAL_ZERO_4
+
     return Decimal(str(value)).quantize(FOUR_PLACES, rounding=ROUND_HALF_UP)
 
 
 def decimal_sum(values: Iterable[Union[Decimal, int, float, str, None]]) -> Decimal:
     total = Decimal("0.00")
+
     for value in values:
         if value is None or value == "":
             continue
+
         total += Decimal(str(value))
+
     return total.quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
 
 
 def kg_to_tonnes(value_kg: Union[Decimal, int, float, str, None]) -> Decimal:
     if value_kg is None or value_kg == "":
         return DECIMAL_ZERO_2
+
     try:
-        return (Decimal(str(value_kg)) / THOUSAND).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+        return (Decimal(str(value_kg)) / THOUSAND).quantize(
+            TWO_PLACES,
+            rounding=ROUND_HALF_UP,
+        )
     except Exception:
         return DECIMAL_ZERO_2
 
@@ -104,6 +130,54 @@ def build_month_date_range(month: int, year: int) -> tuple[date, date]:
     return start_date, end_date
 
 
+def compute_turnover_from_kg(quantity_kg: Decimal) -> Decimal:
+    """
+    Commercial turnover:
+    quantity kg × USD 5.40/kg.
+    """
+    quantity_kg = quantize_2(quantity_kg)
+
+    if quantity_kg <= DECIMAL_ZERO_2:
+        return DECIMAL_ZERO_2
+
+    return quantize_2(quantity_kg * SELLING_PRICE_USD_PER_KG)
+
+
+def compute_projected_gp_from_kg(quantity_kg: Decimal) -> Decimal:
+    """
+    Projected GP based on CVP:
+    quantity kg ÷ 9 kg/head × USD 5.20/head.
+
+    Important:
+    - Do NOT subtract monthly breakeven overheads here.
+    - Monthly breakeven overheads are shown separately in the report.
+    - Position Against Breakeven is calculated separately.
+    """
+    quantity_kg = quantize_2(quantity_kg)
+
+    if quantity_kg <= DECIMAL_ZERO_2:
+        return DECIMAL_ZERO_2
+
+    heads = quantity_kg / CVP_AVERAGE_KG_PER_HEAD
+    projected_gp = heads * CVP_GP_USD_PER_HEAD
+
+    return quantize_2(projected_gp)
+
+
+def compute_position_against_breakeven(
+    projected_gp_usd: Decimal,
+    break_even_value_usd: Decimal,
+) -> Decimal:
+    """
+    Position Against Breakeven:
+    Projected GP - Monthly Breakeven Overheads.
+
+    This can be negative if the projected GP has not yet covered
+    the monthly breakeven overhead target.
+    """
+    return quantize_2(quantize_2(projected_gp_usd) - quantize_2(break_even_value_usd))
+
+
 def build_runtime_default_setting(
     month: Optional[int] = None,
     year: Optional[int] = None,
@@ -124,17 +198,19 @@ def build_runtime_default_setting(
 
 
 # =============================================================================
-# Service
+# SERVICE
 # =============================================================================
 class BreakevenReportService:
     """
     Breakeven behavior:
-    - The breakeven basis is MONTHLY.
-    - The report can be downloaded ANY DAY.
-    - Each daily download reflects the current state of orders for that month.
-    - A new month starts a fresh breakeven cycle automatically.
-    - Monthly settings are applied per month/year; if no monthly setting exists,
-      a global setting is used; if that also does not exist, a runtime default is used.
+    - Breakeven basis is monthly.
+    - A new month starts a fresh breakeven cycle.
+    - Total Booked Turnover = booked kg × USD 5.40/kg.
+    - Total Delivered Turnover = delivered kg × USD 5.40/kg.
+    - Projected GP = quantity kg ÷ 9 kg/head × USD 5.20/head.
+    - Projected GP does NOT subtract monthly breakeven overheads.
+    - Less Monthly Breakeven Overheads is shown separately.
+    - Position Against Breakeven = Projected GP - Monthly Breakeven Overheads.
     """
 
     model = BreakevenSetting
@@ -145,6 +221,7 @@ class BreakevenReportService:
     def _normalize_uuid(self, value: Union[str, UUID]) -> UUID:
         if isinstance(value, UUID):
             return value
+
         try:
             return UUID(str(value))
         except Exception as exc:
@@ -155,11 +232,13 @@ class BreakevenReportService:
 
     def _get_or_404(self, db: Session, setting_id: Union[str, UUID]) -> BreakevenSetting:
         record = db.get(self.model, self._normalize_uuid(setting_id))
+
         if not record:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Breakeven setting not found.",
             )
+
         return record
 
     def _resolve_period(
@@ -175,6 +254,7 @@ class BreakevenReportService:
         as_of_date = request.report_date or date.today()
         month = request.month if request.month is not None else as_of_date.month
         year = request.year if request.year is not None else as_of_date.year
+
         return month, year, as_of_date
 
     def _apply_setting_activation_rules(
@@ -295,8 +375,8 @@ class BreakevenReportService:
         year: int,
     ) -> List[Order]:
         """
-        Booked turnover rule:
-        Use the confirmed/booked orders in the selected monthly scope.
+        Booked orders rule:
+        Use all selected monthly-scope orders.
         This is recalculated live each time the report is requested.
         """
         query = self._build_monthly_orders_scope_query(db, month, year)
@@ -329,13 +409,19 @@ class BreakevenReportService:
                 getattr(record, "break_even_quantity_tonnes", None)
                 or DEFAULT_BREAK_EVEN_QUANTITY_TONNES
             )
+
             rate = quantize_4(
                 getattr(record, "break_even_usd_per_tonne", None)
                 or DEFAULT_BREAK_EVEN_USD_PER_TONNE
+                or CVP_GP_USD_PER_TONNE
             )
 
             record.break_even_quantity_tonnes = quantity
             record.break_even_usd_per_tonne = rate
+
+            # Monthly breakeven overhead/recovery target.
+            # Example:
+            # 133.70 tonnes × approx. 578 USD/tonne ≈ 77,347.
             record.break_even_value_usd = quantize_2(quantity * rate)
 
             scope_type = str(getattr(record, "scope_type", "") or "").strip().lower()
@@ -368,9 +454,7 @@ class BreakevenReportService:
         year: int,
     ) -> BreakevenSettingRead:
         """
-        Converts both persisted settings and runtime fallback settings into a
-        read schema safely. This prevents new months with no saved setting from
-        crashing the report.
+        Converts persisted settings and runtime fallback settings into a read schema safely.
         """
         record_id = getattr(record, "id", None) or uuid4()
         created_at = getattr(record, "created_at", None) or datetime.utcnow()
@@ -397,9 +481,15 @@ class BreakevenReportService:
             scope_type=scope_type,
             month=setting_month,
             year=setting_year,
-            break_even_quantity_tonnes=quantize_2(getattr(record, "break_even_quantity_tonnes", None)),
-            break_even_usd_per_tonne=quantize_4(getattr(record, "break_even_usd_per_tonne", None)),
-            break_even_value_usd=quantize_2(getattr(record, "break_even_value_usd", None)),
+            break_even_quantity_tonnes=quantize_2(
+                getattr(record, "break_even_quantity_tonnes", None)
+            ),
+            break_even_usd_per_tonne=quantize_4(
+                getattr(record, "break_even_usd_per_tonne", None)
+            ),
+            break_even_value_usd=quantize_2(
+                getattr(record, "break_even_value_usd", None)
+            ),
             notes=getattr(record, "notes", None),
             is_active=bool(getattr(record, "is_active", True)),
             created_at=created_at,
@@ -419,10 +509,6 @@ class BreakevenReportService:
         2. Active monthly setting for month/year
         3. Active global setting
         4. Safe runtime default
-
-        Important:
-        - This must never fail just because a new month has no setting yet.
-        - It must always return a valid setting object with recalculated USD value.
         """
         if setting_id is not None:
             explicit_setting = self._get_or_404(db, setting_id)
@@ -459,6 +545,7 @@ class BreakevenReportService:
             return sanitized_global
 
         fallback = build_runtime_default_setting(month=month, year=year)
+
         fallback.break_even_quantity_tonnes = quantize_2(
             getattr(fallback, "break_even_quantity_tonnes", None)
             or DEFAULT_BREAK_EVEN_QUANTITY_TONNES
@@ -466,6 +553,7 @@ class BreakevenReportService:
         fallback.break_even_usd_per_tonne = quantize_4(
             getattr(fallback, "break_even_usd_per_tonne", None)
             or DEFAULT_BREAK_EVEN_USD_PER_TONNE
+            or CVP_GP_USD_PER_TONNE
         )
         fallback.break_even_value_usd = quantize_2(
             fallback.break_even_quantity_tonnes * fallback.break_even_usd_per_tonne
@@ -475,6 +563,7 @@ class BreakevenReportService:
         fallback.year = year
         fallback.is_active = True
         fallback.setting_name = getattr(fallback, "setting_name", None) or "Default Breakeven Setting"
+
         return fallback
 
     def _build_rows(
@@ -482,15 +571,25 @@ class BreakevenReportService:
         break_even_quantity_tonnes: Decimal,
         break_even_value_usd: Decimal,
         total_booked_quantity_tonnes: Decimal,
-        total_booked_value_usd: Decimal,
+        total_booked_turnover_usd: Decimal,
+        projected_gp_based_on_bookings_usd: Decimal,
+        position_against_breakeven_bookings_usd: Decimal,
         total_delivered_quantity_tonnes: Decimal,
-        total_delivered_value_usd: Decimal,
+        total_delivered_turnover_usd: Decimal,
+        projected_gp_based_on_delivered_usd: Decimal,
+        position_against_breakeven_delivered_usd: Decimal,
         booked_vs_break_even_percentage: Decimal,
         delivered_vs_break_even_percentage: Decimal,
     ) -> List[BreakevenSummaryRow]:
         """
-        The report is daily-downloadable but monthly in basis.
-        The rows below always reflect the current month state at download time.
+        Final report rows.
+
+        Important:
+        - Less Monthly Breakeven Overheads appears only once.
+        - It carries the breakeven quantity because the overhead target belongs
+          to the breakeven quantity.
+        - Projected GP is not reduced by overheads.
+        - Position Against Breakeven is where overheads are deducted.
         """
         return [
             BreakevenSummaryRow(
@@ -504,57 +603,84 @@ class BreakevenReportService:
             ),
             BreakevenSummaryRow(
                 index=2,
-                metric="Total Booked Turnover",
-                quantity_tonnes=quantize_2(total_booked_quantity_tonnes),
-                usd_total=quantize_2(total_booked_value_usd),
-                quantity_display=format_tonnes(total_booked_quantity_tonnes),
-                usd_display=format_money(total_booked_value_usd),
+                metric="Less Monthly Breakeven Overheads",
+                quantity_tonnes=quantize_2(break_even_quantity_tonnes),
+                usd_total=quantize_2(break_even_value_usd),
+                quantity_display=format_tonnes(break_even_quantity_tonnes),
+                usd_display=format_money(break_even_value_usd),
                 percentage_display=None,
             ),
             BreakevenSummaryRow(
                 index=3,
-                metric="Projected Turnover (Based on Bookings)",
+                metric="Total Booked Turnover",
                 quantity_tonnes=quantize_2(total_booked_quantity_tonnes),
-                usd_total=quantize_2(total_booked_value_usd),
+                usd_total=quantize_2(total_booked_turnover_usd),
                 quantity_display=format_tonnes(total_booked_quantity_tonnes),
-                usd_display=format_money(total_booked_value_usd),
+                usd_display=format_money(total_booked_turnover_usd),
                 percentage_display=None,
             ),
             BreakevenSummaryRow(
                 index=4,
-                metric="Total Delivered",
-                quantity_tonnes=quantize_2(total_delivered_quantity_tonnes),
-                usd_total=quantize_2(total_delivered_value_usd),
-                quantity_display=format_tonnes(total_delivered_quantity_tonnes),
-                usd_display=format_money(total_delivered_value_usd),
+                metric="Projected GP (Based on Bookings)",
+                quantity_tonnes=quantize_2(total_booked_quantity_tonnes),
+                usd_total=quantize_2(projected_gp_based_on_bookings_usd),
+                quantity_display=format_tonnes(total_booked_quantity_tonnes),
+                usd_display=format_money(projected_gp_based_on_bookings_usd),
                 percentage_display=None,
             ),
             BreakevenSummaryRow(
                 index=5,
-                metric="Projected Turnover (Based on Delivered)",
-                quantity_tonnes=quantize_2(total_delivered_quantity_tonnes),
-                usd_total=quantize_2(total_delivered_value_usd),
-                quantity_display=format_tonnes(total_delivered_quantity_tonnes),
-                usd_display=format_money(total_delivered_value_usd),
+                metric="Position Against Breakeven (Bookings)",
+                quantity_tonnes=quantize_2(total_booked_quantity_tonnes),
+                usd_total=quantize_2(position_against_breakeven_bookings_usd),
+                quantity_display=format_tonnes(total_booked_quantity_tonnes),
+                usd_display=format_money(position_against_breakeven_bookings_usd),
                 percentage_display=None,
             ),
             BreakevenSummaryRow(
                 index=6,
+                metric="Total Delivered Turnover",
+                quantity_tonnes=quantize_2(total_delivered_quantity_tonnes),
+                usd_total=quantize_2(total_delivered_turnover_usd),
+                quantity_display=format_tonnes(total_delivered_quantity_tonnes),
+                usd_display=format_money(total_delivered_turnover_usd),
+                percentage_display=None,
+            ),
+            BreakevenSummaryRow(
+                index=7,
+                metric="Projected GP (Based on Delivered)",
+                quantity_tonnes=quantize_2(total_delivered_quantity_tonnes),
+                usd_total=quantize_2(projected_gp_based_on_delivered_usd),
+                quantity_display=format_tonnes(total_delivered_quantity_tonnes),
+                usd_display=format_money(projected_gp_based_on_delivered_usd),
+                percentage_display=None,
+            ),
+            BreakevenSummaryRow(
+                index=8,
+                metric="Position Against Breakeven (Delivered)",
+                quantity_tonnes=quantize_2(total_delivered_quantity_tonnes),
+                usd_total=quantize_2(position_against_breakeven_delivered_usd),
+                quantity_display=format_tonnes(total_delivered_quantity_tonnes),
+                usd_display=format_money(position_against_breakeven_delivered_usd),
+                percentage_display=None,
+            ),
+            BreakevenSummaryRow(
+                index=9,
                 metric="% Booked vs Breakeven Point",
                 quantity_tonnes=None,
                 usd_total=None,
                 percentage=quantize_2(booked_vs_break_even_percentage),
-                quantity_display=format_percentage(booked_vs_break_even_percentage),
+                quantity_display="-",
                 usd_display="-",
                 percentage_display=format_percentage(booked_vs_break_even_percentage),
             ),
             BreakevenSummaryRow(
-                index=7,
+                index=10,
                 metric="% Delivered vs Breakeven Point",
                 quantity_tonnes=None,
                 usd_total=None,
                 percentage=quantize_2(delivered_vs_break_even_percentage),
-                quantity_display=format_percentage(delivered_vs_break_even_percentage),
+                quantity_display="-",
                 usd_display="-",
                 percentage_display=format_percentage(delivered_vs_break_even_percentage),
             ),
@@ -565,19 +691,29 @@ class BreakevenReportService:
         break_even_quantity_tonnes: Decimal,
         break_even_value_usd: Decimal,
         total_booked_quantity_tonnes: Decimal,
-        total_booked_value_usd: Decimal,
+        total_booked_turnover_usd: Decimal,
         total_delivered_quantity_tonnes: Decimal,
-        total_delivered_value_usd: Decimal,
+        total_delivered_turnover_usd: Decimal,
         booked_vs_break_even_percentage: Decimal,
         delivered_vs_break_even_percentage: Decimal,
     ) -> BreakevenSummaryTotals:
+        """
+        Keeps totals compatible with the existing schema.
+
+        Detailed values such as:
+        - Projected GP
+        - Less Monthly Breakeven Overheads
+        - Position Against Breakeven
+
+        are shown in rows.
+        """
         return BreakevenSummaryTotals(
             break_even_quantity_tonnes=quantize_2(break_even_quantity_tonnes),
             break_even_value_usd=quantize_2(break_even_value_usd),
             total_booked_quantity_tonnes=quantize_2(total_booked_quantity_tonnes),
-            total_booked_value_usd=quantize_2(total_booked_value_usd),
+            total_booked_value_usd=quantize_2(total_booked_turnover_usd),
             total_delivered_quantity_tonnes=quantize_2(total_delivered_quantity_tonnes),
-            total_delivered_value_usd=quantize_2(total_delivered_value_usd),
+            total_delivered_value_usd=quantize_2(total_delivered_turnover_usd),
             booked_vs_break_even_percentage=quantize_2(booked_vs_break_even_percentage),
             delivered_vs_break_even_percentage=quantize_2(delivered_vs_break_even_percentage),
         )
@@ -600,6 +736,7 @@ class BreakevenReportService:
 
         db.commit()
         db.refresh(record)
+
         return BreakevenSettingRead.model_validate(record)
 
     def get_setting(
@@ -662,6 +799,7 @@ class BreakevenReportService:
 
         db.commit()
         db.refresh(record)
+
         return BreakevenSettingRead.model_validate(record)
 
     def activate_setting(
@@ -680,6 +818,7 @@ class BreakevenReportService:
 
         db.commit()
         db.refresh(record)
+
         return BreakevenSettingRead.model_validate(record)
 
     def deactivate_setting(
@@ -693,6 +832,7 @@ class BreakevenReportService:
         db.add(record)
         db.commit()
         db.refresh(record)
+
         return BreakevenSettingRead.model_validate(record)
 
     # -------------------------------------------------------------------------
@@ -730,22 +870,46 @@ class BreakevenReportService:
         )
         delivered_orders = [order for order in booked_orders if self._is_completed_order(order)]
 
-        if booked_orders:
-            total_booked_quantity_kg = decimal_sum(order.total_quantity_kg for order in booked_orders)
-            total_booked_value_usd = decimal_sum(order.shipment_value_usd for order in booked_orders)
-        else:
-            total_booked_quantity_kg = DECIMAL_ZERO_2
-            total_booked_value_usd = DECIMAL_ZERO_2
+        total_booked_quantity_kg = (
+            decimal_sum(order.total_quantity_kg for order in booked_orders)
+            if booked_orders
+            else DECIMAL_ZERO_2
+        )
 
-        if delivered_orders:
-            total_delivered_quantity_kg = decimal_sum(order.total_quantity_kg for order in delivered_orders)
-            total_delivered_value_usd = decimal_sum(order.shipment_value_usd for order in delivered_orders)
-        else:
-            total_delivered_quantity_kg = DECIMAL_ZERO_2
-            total_delivered_value_usd = DECIMAL_ZERO_2
+        total_delivered_quantity_kg = (
+            decimal_sum(order.total_quantity_kg for order in delivered_orders)
+            if delivered_orders
+            else DECIMAL_ZERO_2
+        )
 
         total_booked_quantity_tonnes = kg_to_tonnes(total_booked_quantity_kg)
         total_delivered_quantity_tonnes = kg_to_tonnes(total_delivered_quantity_kg)
+
+        # Commercial turnover:
+        # quantity kg × USD 5.40/kg.
+        total_booked_turnover_usd = compute_turnover_from_kg(total_booked_quantity_kg)
+        total_delivered_turnover_usd = compute_turnover_from_kg(total_delivered_quantity_kg)
+
+        # Projected GP:
+        # quantity kg ÷ 9 kg/head × USD 5.20/head.
+        # Do NOT subtract monthly breakeven overheads here.
+        projected_gp_based_on_bookings_usd = compute_projected_gp_from_kg(
+            total_booked_quantity_kg,
+        )
+        projected_gp_based_on_delivered_usd = compute_projected_gp_from_kg(
+            total_delivered_quantity_kg,
+        )
+
+        # Position Against Breakeven:
+        # Projected GP - Monthly Breakeven Overheads.
+        position_against_breakeven_bookings_usd = compute_position_against_breakeven(
+            projected_gp_usd=projected_gp_based_on_bookings_usd,
+            break_even_value_usd=break_even_value_usd,
+        )
+        position_against_breakeven_delivered_usd = compute_position_against_breakeven(
+            projected_gp_usd=projected_gp_based_on_delivered_usd,
+            break_even_value_usd=break_even_value_usd,
+        )
 
         booked_vs_break_even_percentage = compute_percentage(
             total_booked_quantity_tonnes,
@@ -760,9 +924,9 @@ class BreakevenReportService:
             break_even_quantity_tonnes=break_even_quantity_tonnes,
             break_even_value_usd=break_even_value_usd,
             total_booked_quantity_tonnes=total_booked_quantity_tonnes,
-            total_booked_value_usd=total_booked_value_usd,
+            total_booked_turnover_usd=total_booked_turnover_usd,
             total_delivered_quantity_tonnes=total_delivered_quantity_tonnes,
-            total_delivered_value_usd=total_delivered_value_usd,
+            total_delivered_turnover_usd=total_delivered_turnover_usd,
             booked_vs_break_even_percentage=booked_vs_break_even_percentage,
             delivered_vs_break_even_percentage=delivered_vs_break_even_percentage,
         )
@@ -772,9 +936,13 @@ class BreakevenReportService:
                 break_even_quantity_tonnes=break_even_quantity_tonnes,
                 break_even_value_usd=break_even_value_usd,
                 total_booked_quantity_tonnes=total_booked_quantity_tonnes,
-                total_booked_value_usd=total_booked_value_usd,
+                total_booked_turnover_usd=total_booked_turnover_usd,
+                projected_gp_based_on_bookings_usd=projected_gp_based_on_bookings_usd,
+                position_against_breakeven_bookings_usd=position_against_breakeven_bookings_usd,
                 total_delivered_quantity_tonnes=total_delivered_quantity_tonnes,
-                total_delivered_value_usd=total_delivered_value_usd,
+                total_delivered_turnover_usd=total_delivered_turnover_usd,
+                projected_gp_based_on_delivered_usd=projected_gp_based_on_delivered_usd,
+                position_against_breakeven_delivered_usd=position_against_breakeven_delivered_usd,
                 booked_vs_break_even_percentage=booked_vs_break_even_percentage,
                 delivered_vs_break_even_percentage=delivered_vs_break_even_percentage,
             )

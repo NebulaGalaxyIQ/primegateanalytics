@@ -1,0 +1,11 @@
+# Storage / generated files
+storage/
+*.docx
+*.pdf
+
+# Random artifacts
+26.0.1
+
+# Python
+__pycache__/
+*.pyc
