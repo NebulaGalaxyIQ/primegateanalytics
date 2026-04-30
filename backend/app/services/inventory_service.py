@@ -4,7 +4,7 @@ import csv
 import math
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from io import BytesIO, StringIO
 from typing import Any
@@ -430,7 +430,7 @@ class InventoryService:
         )
 
     # =========================================================================
-    # DAILY SHEET BUILDERS (FIXED)
+    # DAILY SHEET BUILDERS (RECORDED HISTORY + CARRY FORWARD)
     # =========================================================================
 
     def get_product_daily_sheet(
@@ -440,47 +440,59 @@ class InventoryService:
         store: ProductStoreName | str,
         active_only: bool = True,
     ) -> dict[str, Any]:
+        """Return the daily product sheet for one storage area.
+
+        Important behaviour:
+        - Show rows saved for this exact date and storage area.
+        - Also carry forward products that were recorded previously in the
+          same storage area but have no saved row today.
+        - Do NOT generate every active product from the product master list.
+          That caused products to appear in stores where they were never kept.
+        """
         store_value = self._normalize_product_store(store)
-        products = self._list_product_models(active_only=active_only)
-        existing_rows = self._list_product_entries_for_sheet(entry_date=entry_date, store=store_value)
-        existing_by_product_id = {row.product_id: row for row in existing_rows}
+        existing_rows = self._list_product_entries_for_sheet(
+            entry_date=entry_date,
+            store=store_value,
+        )
+        existing_product_ids = {safe_text(row.product_id) for row in existing_rows}
 
         rows: list[dict[str, Any]] = []
-        serial_cursor = 1
         saved_count = 0
         generated_count = 0
 
-        for product in products:
-            saved_row = existing_by_product_id.pop(product.id, None)
-            if saved_row:
-                rows.append(self._product_sheet_row_from_existing(saved_row))
-                saved_count += 1
-                serial_cursor = max(serial_cursor, int(saved_row.serial_no or 0) + 1)
-            else:
-                rows.append(
-                    self._product_sheet_row_from_product(
-                        product=product,
-                        entry_date=entry_date,
-                        store=store_value,
-                        serial_no=serial_cursor,
-                    )
-                )
-                generated_count += 1
-                serial_cursor += 1
-
-        leftover_saved_rows = sorted(
-            existing_by_product_id.values(),
-            key=lambda row: (
-                int(row.serial_no or 0),
-                safe_text(row.product_category_name).lower(),
-                safe_text(row.product_name).lower(),
-            ),
-        )
-        for saved_row in leftover_saved_rows:
+        for saved_row in existing_rows:
             rows.append(self._product_sheet_row_from_existing(saved_row))
             saved_count += 1
 
-        # FIX: Reassign serial numbers sequentially based on final order
+        carry_rows = self._list_latest_product_entries_before_date_for_sheet(
+            entry_date=entry_date,
+            store=store_value,
+            active_only=active_only,
+        )
+
+        for previous_row in carry_rows:
+            product_id = safe_text(previous_row.product_id)
+            if not product_id or product_id in existing_product_ids:
+                continue
+
+            rows.append(
+                self._product_sheet_row_from_previous_entry(
+                    previous_row=previous_row,
+                    entry_date=entry_date,
+                    serial_no=len(rows) + 1,
+                )
+            )
+            generated_count += 1
+            existing_product_ids.add(product_id)
+
+        rows.sort(
+            key=lambda row: (
+                safe_text(row.get("product_category_name")).lower(),
+                safe_text(row.get("product_name")).lower(),
+                int(row.get("serial_no") or 0),
+            )
+        )
+
         for idx, row in enumerate(rows, start=1):
             row["serial_no"] = idx
 
@@ -501,47 +513,56 @@ class InventoryService:
         store: ConsumableStoreName | str,
         active_only: bool = True,
     ) -> dict[str, Any]:
+        """Return the daily consumable sheet for one storage area.
+
+        This mirrors product behaviour: only saved rows plus historical
+        item-store pairs are shown. It does not generate the full consumable
+        master list for every store.
+        """
         store_value = self._normalize_consumable_store(store)
-        items = self._list_consumable_item_models(active_only=active_only)
-        existing_rows = self._list_consumable_entries_for_sheet(entry_date=entry_date, store=store_value)
-        existing_by_item_id = {row.item_id: row for row in existing_rows}
+        existing_rows = self._list_consumable_entries_for_sheet(
+            entry_date=entry_date,
+            store=store_value,
+        )
+        existing_item_ids = {safe_text(row.item_id) for row in existing_rows}
 
         rows: list[dict[str, Any]] = []
-        serial_cursor = 1
         saved_count = 0
         generated_count = 0
 
-        for item in items:
-            saved_row = existing_by_item_id.pop(item.id, None)
-            if saved_row:
-                rows.append(self._consumable_sheet_row_from_existing(saved_row))
-                saved_count += 1
-                serial_cursor = max(serial_cursor, int(saved_row.serial_no or 0) + 1)
-            else:
-                rows.append(
-                    self._consumable_sheet_row_from_item(
-                        item=item,
-                        entry_date=entry_date,
-                        store=store_value,
-                        serial_no=serial_cursor,
-                    )
-                )
-                generated_count += 1
-                serial_cursor += 1
-
-        leftover_saved_rows = sorted(
-            existing_by_item_id.values(),
-            key=lambda row: (
-                int(row.serial_no or 0),
-                safe_text(row.item_category_name).lower(),
-                safe_text(row.item_name).lower(),
-            ),
-        )
-        for saved_row in leftover_saved_rows:
+        for saved_row in existing_rows:
             rows.append(self._consumable_sheet_row_from_existing(saved_row))
             saved_count += 1
 
-        # FIX: Reassign serial numbers sequentially based on final order
+        carry_rows = self._list_latest_consumable_entries_before_date_for_sheet(
+            entry_date=entry_date,
+            store=store_value,
+            active_only=active_only,
+        )
+
+        for previous_row in carry_rows:
+            item_id = safe_text(previous_row.item_id)
+            if not item_id or item_id in existing_item_ids:
+                continue
+
+            rows.append(
+                self._consumable_sheet_row_from_previous_entry(
+                    previous_row=previous_row,
+                    entry_date=entry_date,
+                    serial_no=len(rows) + 1,
+                )
+            )
+            generated_count += 1
+            existing_item_ids.add(item_id)
+
+        rows.sort(
+            key=lambda row: (
+                safe_text(row.get("item_category_name")).lower(),
+                safe_text(row.get("item_name")).lower(),
+                int(row.get("serial_no") or 0),
+            )
+        )
+
         for idx, row in enumerate(rows, start=1):
             row["serial_no"] = idx
 
@@ -1022,31 +1043,15 @@ class InventoryService:
         self,
         payload: ProductInventoryReportRequest,
     ) -> ProductInventoryReportResponse:
-        query = self.db.query(ProductStoreInventory).filter(
-            ProductStoreInventory.entry_date >= payload.start_date,
-            ProductStoreInventory.entry_date <= payload.end_date,
-        )
+        """Build a product report from full daily snapshots.
 
-        if payload.store:
-            query = query.filter(ProductStoreInventory.store == payload.store)
-        if payload.product_category_id:
-            query = query.filter(ProductStoreInventory.product_category_id == payload.product_category_id)
-        if payload.product_id:
-            query = query.filter(ProductStoreInventory.product_id == payload.product_id)
-        if payload.balance_unit:
-            query = query.filter(ProductStoreInventory.balance_unit == payload.balance_unit)
-        if payload.checked_by_initials:
-            query = query.filter(ProductStoreInventory.checked_by_initials == payload.checked_by_initials)
-
-        rows = query.order_by(
-            ProductStoreInventory.entry_date.asc(),
-            ProductStoreInventory.store.asc(),
-            ProductStoreInventory.product_category_name.asc(),
-            ProductStoreInventory.product_name.asc(),
-            ProductStoreInventory.serial_no.asc(),
-            ProductStoreInventory.created_at.asc(),
-        ).all()
-
+        This intentionally does NOT rely only on rows saved in the database for
+        the selected day. The daily sheet can generate carry-forward rows for
+        active products that had no movement today. Reports must include those
+        generated rows too, otherwise items disappear from daily reports even
+        though yesterday's closing balance is still today's opening balance.
+        """
+        rows = self._build_product_report_snapshot_rows(payload)
         groups = self._group_product_report_rows(rows, payload.report_type)
         grand_totals = ProductInventoryReportSummary()
 
@@ -1110,31 +1115,14 @@ class InventoryService:
         self,
         payload: ConsumableInventoryReportRequest,
     ) -> ConsumableInventoryReportResponse:
-        query = self.db.query(ConsumableStoreInventory).filter(
-            ConsumableStoreInventory.entry_date >= payload.start_date,
-            ConsumableStoreInventory.entry_date <= payload.end_date,
-        )
+        """Build a consumable report from full daily snapshots.
 
-        if payload.store:
-            query = query.filter(ConsumableStoreInventory.store == payload.store)
-        if payload.item_category_id:
-            query = query.filter(ConsumableStoreInventory.item_category_id == payload.item_category_id)
-        if payload.item_id:
-            query = query.filter(ConsumableStoreInventory.item_id == payload.item_id)
-        if payload.unit:
-            query = query.filter(ConsumableStoreInventory.unit == payload.unit)
-        if payload.checked_by_initials:
-            query = query.filter(ConsumableStoreInventory.checked_by_initials == payload.checked_by_initials)
-
-        rows = query.order_by(
-            ConsumableStoreInventory.entry_date.asc(),
-            ConsumableStoreInventory.store.asc(),
-            ConsumableStoreInventory.item_category_name.asc(),
-            ConsumableStoreInventory.item_name.asc(),
-            ConsumableStoreInventory.serial_no.asc(),
-            ConsumableStoreInventory.created_at.asc(),
-        ).all()
-
+        Saved rows are used where they exist. Missing rows are generated from
+        the consumable master list with opening balance copied from the latest
+        previous closing balance, issued_today as zero, and closing balance equal
+        to the opening balance.
+        """
+        rows = self._build_consumable_report_snapshot_rows(payload)
         groups = self._group_consumable_report_rows(rows, payload.report_type)
         grand_totals = ConsumableInventoryReportSummary()
 
@@ -1279,6 +1267,98 @@ class InventoryService:
             .all()
         )
 
+    def _list_latest_product_entries_before_date_for_sheet(
+        self,
+        *,
+        entry_date: date,
+        store: ProductStoreName,
+        active_only: bool = True,
+    ) -> list[ProductStoreInventory]:
+        """Latest historical product rows by product for one store.
+
+        These rows are the source for carry-forward lines. We intentionally
+        read inventory history instead of the product master list so that the
+        sheet/report only shows products that have actually existed in this
+        storage area before the selected date.
+        """
+        query = (
+            self.db.query(ProductStoreInventory)
+            .options(
+                joinedload(ProductStoreInventory.product_category),
+                joinedload(ProductStoreInventory.product),
+            )
+            .filter(
+                ProductStoreInventory.entry_date < entry_date,
+                ProductStoreInventory.store == store,
+            )
+            .order_by(
+                ProductStoreInventory.entry_date.desc(),
+                ProductStoreInventory.created_at.desc(),
+                ProductStoreInventory.serial_no.asc(),
+            )
+        )
+
+        latest_by_product_id: dict[str, ProductStoreInventory] = {}
+        for row in query.all():
+            product_id = safe_text(row.product_id)
+            if not product_id or product_id in latest_by_product_id:
+                continue
+            if active_only and row.product is not None and not bool(row.product.is_active):
+                continue
+            latest_by_product_id[product_id] = row
+
+        return sorted(
+            latest_by_product_id.values(),
+            key=lambda row: (
+                safe_text(row.product_category_name).lower(),
+                safe_text(row.product_name).lower(),
+                int(row.serial_no or 0),
+            ),
+        )
+
+    def _list_latest_consumable_entries_before_date_for_sheet(
+        self,
+        *,
+        entry_date: date,
+        store: ConsumableStoreName,
+        active_only: bool = True,
+    ) -> list[ConsumableStoreInventory]:
+        """Latest historical consumable rows by item for one store."""
+        query = (
+            self.db.query(ConsumableStoreInventory)
+            .options(
+                joinedload(ConsumableStoreInventory.item_category),
+                joinedload(ConsumableStoreInventory.item),
+            )
+            .filter(
+                ConsumableStoreInventory.entry_date < entry_date,
+                ConsumableStoreInventory.store == store,
+            )
+            .order_by(
+                ConsumableStoreInventory.entry_date.desc(),
+                ConsumableStoreInventory.created_at.desc(),
+                ConsumableStoreInventory.serial_no.asc(),
+            )
+        )
+
+        latest_by_item_id: dict[str, ConsumableStoreInventory] = {}
+        for row in query.all():
+            item_id = safe_text(row.item_id)
+            if not item_id or item_id in latest_by_item_id:
+                continue
+            if active_only and row.item is not None and not bool(row.item.is_active):
+                continue
+            latest_by_item_id[item_id] = row
+
+        return sorted(
+            latest_by_item_id.values(),
+            key=lambda row: (
+                safe_text(row.item_category_name).lower(),
+                safe_text(row.item_name).lower(),
+                int(row.serial_no or 0),
+            ),
+        )
+
     def _product_sheet_row_from_existing(self, row: ProductStoreInventory) -> dict[str, Any]:
         read = self._to_product_inventory_read(row)
         data = read.model_dump(mode="python")
@@ -1294,6 +1374,83 @@ class InventoryService:
         data["is_existing"] = True
         data["source"] = "saved"
         return data
+
+    def _product_sheet_row_from_previous_entry(
+        self,
+        *,
+        previous_row: ProductStoreInventory,
+        entry_date: date,
+        serial_no: int,
+    ) -> dict[str, Any]:
+        opening_balance = qty(previous_row.closing_balance)
+        balance_unit = previous_row.balance_unit or ProductBalanceUnit.KG
+
+        return {
+            "id": None,
+            "entry_id": None,
+            "serial_no": serial_no,
+            "entry_date": entry_date,
+            "store": previous_row.store,
+            "product_category_id": previous_row.product_category_id,
+            "product_id": previous_row.product_id,
+            "product_category_name": previous_row.product_category_name,
+            "product_name": previous_row.product_name,
+            "balance_unit": balance_unit,
+            "opening_balance": opening_balance,
+            "inflow_production": qty(0),
+            "inflow_transfers_in": qty(0),
+            "outflow_dispatch": qty(0),
+            "outflow_transfers_out": qty(0),
+            "total_boxes": 0,
+            "total_pieces": 0,
+            "closing_balance": opening_balance,
+            "remarks": None,
+            "checked_by_initials": None,
+            "created_by": None,
+            "updated_by": None,
+            "created_at": None,
+            "updated_at": None,
+            "week_start_date": None,
+            "week_end_date": None,
+            "net_movement": qty(0),
+            "is_existing": False,
+            "source": "carry_forward",
+        }
+
+    def _consumable_sheet_row_from_previous_entry(
+        self,
+        *,
+        previous_row: ConsumableStoreInventory,
+        entry_date: date,
+        serial_no: int,
+    ) -> dict[str, Any]:
+        opening_balance = qty(previous_row.closing_balance)
+
+        return {
+            "id": None,
+            "entry_id": None,
+            "serial_no": serial_no,
+            "entry_date": entry_date,
+            "store": previous_row.store,
+            "item_category_id": previous_row.item_category_id,
+            "item_id": previous_row.item_id,
+            "item_category_name": previous_row.item_category_name,
+            "item_name": previous_row.item_name,
+            "unit": previous_row.unit,
+            "opening_balance": opening_balance,
+            "issued_today": qty(0),
+            "closing_balance": opening_balance,
+            "remarks": None,
+            "checked_by_initials": None,
+            "created_by": None,
+            "updated_by": None,
+            "created_at": None,
+            "updated_at": None,
+            "week_start_date": None,
+            "week_end_date": None,
+            "is_existing": False,
+            "source": "carry_forward",
+        }
 
     def _product_sheet_row_from_product(
         self,
@@ -1962,65 +2119,294 @@ class InventoryService:
         return int(current_max or 0) + 1
 
     # =========================================================================
-    # PRIVATE REPORT GROUPING (FIXED)
+    # PRIVATE REPORT SNAPSHOT / GROUPING HELPERS
     # =========================================================================
+
+    def _iter_report_dates(self, start_date: date, end_date: date):
+        if start_date > end_date:
+            raise InventoryServiceError("Report start_date cannot be after end_date.")
+
+        current = start_date
+        while current <= end_date:
+            yield current
+            current = current + timedelta(days=1)
+
+    def _week_bounds_for_date(self, value: date) -> tuple[date, date]:
+        start = value - timedelta(days=value.weekday())
+        end = start + timedelta(days=6)
+        return start, end
+
+    def _row_value(self, row: Any, key: str, default: Any = None) -> Any:
+        if isinstance(row, dict):
+            return row.get(key, default)
+        return getattr(row, key, default)
+
+    def _enum_value(self, value: Any) -> Any:
+        return getattr(value, "value", value)
+
+    def _same_report_value(self, left: Any, right: Any) -> bool:
+        if right is None:
+            return True
+        return (
+            left == right
+            or self._enum_value(left) == self._enum_value(right)
+            or safe_text(left) == safe_text(right)
+            or safe_text(self._enum_value(left)) == safe_text(self._enum_value(right))
+        )
+
+    def _product_report_stores(self, payload: ProductInventoryReportRequest) -> list[ProductStoreName]:
+        """Storage areas that have product inventory history relevant to report."""
+        if payload.store:
+            return [self._normalize_product_store(payload.store)]
+
+        query = self.db.query(ProductStoreInventory.store).filter(
+            ProductStoreInventory.entry_date <= payload.end_date,
+        )
+        if payload.product_category_id:
+            query = query.filter(ProductStoreInventory.product_category_id == payload.product_category_id)
+        if payload.product_id:
+            query = query.filter(ProductStoreInventory.product_id == payload.product_id)
+        if payload.balance_unit:
+            query = query.filter(ProductStoreInventory.balance_unit == payload.balance_unit)
+        if payload.checked_by_initials:
+            query = query.filter(ProductStoreInventory.checked_by_initials == payload.checked_by_initials)
+
+        stores: list[ProductStoreName] = []
+        seen: set[str] = set()
+        for (raw_store,) in query.order_by(ProductStoreInventory.store.asc()).all():
+            store = self._normalize_product_store(raw_store)
+            key = safe_text(self._enum_value(store))
+            if key and key not in seen:
+                seen.add(key)
+                stores.append(store)
+        return stores
+
+    def _consumable_report_stores(self, payload: ConsumableInventoryReportRequest) -> list[ConsumableStoreName]:
+        """Storage areas that have consumable inventory history relevant to report."""
+        if payload.store:
+            return [self._normalize_consumable_store(payload.store)]
+
+        query = self.db.query(ConsumableStoreInventory.store).filter(
+            ConsumableStoreInventory.entry_date <= payload.end_date,
+        )
+        if payload.item_category_id:
+            query = query.filter(ConsumableStoreInventory.item_category_id == payload.item_category_id)
+        if payload.item_id:
+            query = query.filter(ConsumableStoreInventory.item_id == payload.item_id)
+        if payload.unit:
+            query = query.filter(ConsumableStoreInventory.unit == payload.unit)
+        if payload.checked_by_initials:
+            query = query.filter(ConsumableStoreInventory.checked_by_initials == payload.checked_by_initials)
+
+        stores: list[ConsumableStoreName] = []
+        seen: set[str] = set()
+        for (raw_store,) in query.order_by(ConsumableStoreInventory.store.asc()).all():
+            store = self._normalize_consumable_store(raw_store)
+            key = safe_text(self._enum_value(store))
+            if key and key not in seen:
+                seen.add(key)
+                stores.append(store)
+        return stores
+
+    def _product_report_row_matches(
+        self,
+        row: dict[str, Any],
+        payload: ProductInventoryReportRequest,
+    ) -> bool:
+        if payload.store and not self._same_report_value(row.get("store"), payload.store):
+            return False
+        if payload.product_category_id and safe_text(row.get("product_category_id")) != safe_text(payload.product_category_id):
+            return False
+        if payload.product_id and safe_text(row.get("product_id")) != safe_text(payload.product_id):
+            return False
+        if payload.balance_unit and not self._same_report_value(row.get("balance_unit"), payload.balance_unit):
+            return False
+        if payload.checked_by_initials and safe_text(row.get("checked_by_initials")).strip() != safe_text(payload.checked_by_initials).strip():
+            return False
+        return True
+
+    def _consumable_report_row_matches(
+        self,
+        row: dict[str, Any],
+        payload: ConsumableInventoryReportRequest,
+    ) -> bool:
+        if payload.store and not self._same_report_value(row.get("store"), payload.store):
+            return False
+        if payload.item_category_id and safe_text(row.get("item_category_id")) != safe_text(payload.item_category_id):
+            return False
+        if payload.item_id and safe_text(row.get("item_id")) != safe_text(payload.item_id):
+            return False
+        if payload.unit and safe_text(row.get("unit")).strip().lower() != safe_text(payload.unit).strip().lower():
+            return False
+        if payload.checked_by_initials and safe_text(row.get("checked_by_initials")).strip() != safe_text(payload.checked_by_initials).strip():
+            return False
+        return True
+
+    def _prepare_product_report_snapshot_row(self, row: dict[str, Any], entry_date: date) -> dict[str, Any]:
+        data = dict(row)
+        data["entry_date"] = data.get("entry_date") or entry_date
+
+        week_start, week_end = self._week_bounds_for_date(data["entry_date"])
+        data["week_start_date"] = data.get("week_start_date") or week_start
+        data["week_end_date"] = data.get("week_end_date") or week_end
+
+        data["opening_balance"] = qty(data.get("opening_balance"))
+        data["inflow_production"] = qty(data.get("inflow_production"))
+        data["inflow_transfers_in"] = qty(data.get("inflow_transfers_in"))
+        data["outflow_dispatch"] = qty(data.get("outflow_dispatch"))
+        data["outflow_transfers_out"] = qty(data.get("outflow_transfers_out"))
+        data["total_boxes"] = int(data.get("total_boxes") or 0)
+        data["total_pieces"] = int(data.get("total_pieces") or 0)
+        data["closing_balance"] = qty(data.get("closing_balance"))
+
+        return data
+
+    def _prepare_consumable_report_snapshot_row(self, row: dict[str, Any], entry_date: date) -> dict[str, Any]:
+        data = dict(row)
+        data["entry_date"] = data.get("entry_date") or entry_date
+
+        week_start, week_end = self._week_bounds_for_date(data["entry_date"])
+        data["week_start_date"] = data.get("week_start_date") or week_start
+        data["week_end_date"] = data.get("week_end_date") or week_end
+
+        data["opening_balance"] = qty(data.get("opening_balance"))
+        data["issued_today"] = qty(data.get("issued_today"))
+        data["closing_balance"] = qty(data.get("closing_balance"))
+
+        return data
+
+    def _build_product_report_snapshot_rows(
+        self,
+        payload: ProductInventoryReportRequest,
+    ) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        stores = self._product_report_stores(payload)
+        active_only = not bool(payload.product_id or payload.product_category_id)
+
+        for entry_date in self._iter_report_dates(payload.start_date, payload.end_date):
+            for store in stores:
+                sheet = self.get_product_daily_sheet(
+                    entry_date=entry_date,
+                    store=store,
+                    active_only=active_only,
+                )
+
+                for raw_row in sheet.get("rows", []):
+                    row = self._prepare_product_report_snapshot_row(raw_row, entry_date)
+                    if self._product_report_row_matches(row, payload):
+                        rows.append(row)
+
+        rows.sort(
+            key=lambda row: (
+                row.get("entry_date"),
+                safe_text(self._enum_value(row.get("store"))).lower(),
+                safe_text(row.get("product_category_name")).lower(),
+                safe_text(row.get("product_name")).lower(),
+                int(row.get("serial_no") or 0),
+            )
+        )
+        return rows
+
+    def _build_consumable_report_snapshot_rows(
+        self,
+        payload: ConsumableInventoryReportRequest,
+    ) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        stores = self._consumable_report_stores(payload)
+        active_only = not bool(payload.item_id or payload.item_category_id)
+
+        for entry_date in self._iter_report_dates(payload.start_date, payload.end_date):
+            for store in stores:
+                sheet = self.get_consumable_daily_sheet(
+                    entry_date=entry_date,
+                    store=store,
+                    active_only=active_only,
+                )
+
+                for raw_row in sheet.get("rows", []):
+                    row = self._prepare_consumable_report_snapshot_row(raw_row, entry_date)
+                    if self._consumable_report_row_matches(row, payload):
+                        rows.append(row)
+
+        rows.sort(
+            key=lambda row: (
+                row.get("entry_date"),
+                safe_text(self._enum_value(row.get("store"))).lower(),
+                safe_text(row.get("item_category_name")).lower(),
+                safe_text(row.get("item_name")).lower(),
+                int(row.get("serial_no") or 0),
+            )
+        )
+        return rows
 
     def _group_product_report_rows(
         self,
-        rows: list[ProductStoreInventory],
+        rows: list[Any],
         report_type: str,
     ) -> list[ProductInventoryReportGroup]:
-        grouped: dict[tuple[date, date, str], list[ProductStoreInventory]] = defaultdict(list)
+        grouped: dict[tuple[date, date, str], list[Any]] = defaultdict(list)
 
         for row in rows:
+            entry_date = self._row_value(row, "entry_date")
+
             if report_type == "weekly":
-                start = row.week_start_date
-                end = row.week_end_date
+                start = self._row_value(row, "week_start_date")
+                end = self._row_value(row, "week_end_date")
+                if not start or not end:
+                    start, end = self._week_bounds_for_date(entry_date)
                 label = f"Week: {fmt_date(start)} to {fmt_date(end)}"
             else:
-                start = row.entry_date
-                end = row.entry_date
-                label = f"Date: {fmt_date(row.entry_date)}"
+                start = entry_date
+                end = entry_date
+                label = f"Date: {fmt_date(entry_date)}"
 
             grouped[(start, end, label)].append(row)
 
         groups: list[ProductInventoryReportGroup] = []
 
-        for (start, end, label), items in sorted(grouped.items(), key=lambda x: x[0][0]):
+        for (start, end, label), items in sorted(grouped.items(), key=lambda x: (x[0][0], x[0][1], x[0][2])):
             summary = ProductInventoryReportSummary()
             report_rows: list[ProductInventoryReportRow] = []
 
-            # FIX: Use enumeration index for serial_no, ignore stored value
             for index, row in enumerate(items, start=1):
+                opening_balance = qty(self._row_value(row, "opening_balance"))
+                inflow_production = qty(self._row_value(row, "inflow_production"))
+                inflow_transfers_in = qty(self._row_value(row, "inflow_transfers_in"))
+                outflow_dispatch = qty(self._row_value(row, "outflow_dispatch"))
+                outflow_transfers_out = qty(self._row_value(row, "outflow_transfers_out"))
+                total_boxes = int(self._row_value(row, "total_boxes") or 0)
+                total_pieces = int(self._row_value(row, "total_pieces") or 0)
+                closing_balance = qty(self._row_value(row, "closing_balance"))
+
                 report_rows.append(
                     ProductInventoryReportRow(
-                        serial_no=index,    # <-- sequential index
-                        entry_date=row.entry_date,
-                        store=row.store,
-                        product_category_name=row.product_category_name,
-                        product_name=row.product_name,
-                        balance_unit=row.balance_unit,
-                        opening_balance=qty(row.opening_balance),
-                        inflow_production=qty(row.inflow_production),
-                        inflow_transfers_in=qty(row.inflow_transfers_in),
-                        outflow_dispatch=qty(row.outflow_dispatch),
-                        outflow_transfers_out=qty(row.outflow_transfers_out),
-                        total_boxes=int(row.total_boxes or 0),
-                        total_pieces=int(row.total_pieces or 0),
-                        closing_balance=qty(row.closing_balance),
-                        remarks=row.remarks,
-                        checked_by_initials=row.checked_by_initials,
+                        serial_no=index,
+                        entry_date=self._row_value(row, "entry_date"),
+                        store=self._row_value(row, "store"),
+                        product_category_name=self._row_value(row, "product_category_name"),
+                        product_name=self._row_value(row, "product_name"),
+                        balance_unit=self._row_value(row, "balance_unit"),
+                        opening_balance=opening_balance,
+                        inflow_production=inflow_production,
+                        inflow_transfers_in=inflow_transfers_in,
+                        outflow_dispatch=outflow_dispatch,
+                        outflow_transfers_out=outflow_transfers_out,
+                        total_boxes=total_boxes,
+                        total_pieces=total_pieces,
+                        closing_balance=closing_balance,
+                        remarks=self._row_value(row, "remarks"),
+                        checked_by_initials=self._row_value(row, "checked_by_initials"),
                     )
                 )
 
-                summary.opening_balance += qty(row.opening_balance)
-                summary.inflow_production += qty(row.inflow_production)
-                summary.inflow_transfers_in += qty(row.inflow_transfers_in)
-                summary.outflow_dispatch += qty(row.outflow_dispatch)
-                summary.outflow_transfers_out += qty(row.outflow_transfers_out)
-                summary.total_boxes += int(row.total_boxes or 0)
-                summary.total_pieces += int(row.total_pieces or 0)
-                summary.closing_balance += qty(row.closing_balance)
+                summary.opening_balance += opening_balance
+                summary.inflow_production += inflow_production
+                summary.inflow_transfers_in += inflow_transfers_in
+                summary.outflow_dispatch += outflow_dispatch
+                summary.outflow_transfers_out += outflow_transfers_out
+                summary.total_boxes += total_boxes
+                summary.total_pieces += total_pieces
+                summary.closing_balance += closing_balance
 
             groups.append(
                 ProductInventoryReportGroup(
@@ -2036,50 +2422,57 @@ class InventoryService:
 
     def _group_consumable_report_rows(
         self,
-        rows: list[ConsumableStoreInventory],
+        rows: list[Any],
         report_type: str,
     ) -> list[ConsumableInventoryReportGroup]:
-        grouped: dict[tuple[date, date, str], list[ConsumableStoreInventory]] = defaultdict(list)
+        grouped: dict[tuple[date, date, str], list[Any]] = defaultdict(list)
 
         for row in rows:
+            entry_date = self._row_value(row, "entry_date")
+
             if report_type == "weekly":
-                start = row.week_start_date
-                end = row.week_end_date
+                start = self._row_value(row, "week_start_date")
+                end = self._row_value(row, "week_end_date")
+                if not start or not end:
+                    start, end = self._week_bounds_for_date(entry_date)
                 label = f"Week: {fmt_date(start)} to {fmt_date(end)}"
             else:
-                start = row.entry_date
-                end = row.entry_date
-                label = f"Date: {fmt_date(row.entry_date)}"
+                start = entry_date
+                end = entry_date
+                label = f"Date: {fmt_date(entry_date)}"
 
             grouped[(start, end, label)].append(row)
 
         groups: list[ConsumableInventoryReportGroup] = []
 
-        for (start, end, label), items in sorted(grouped.items(), key=lambda x: x[0][0]):
+        for (start, end, label), items in sorted(grouped.items(), key=lambda x: (x[0][0], x[0][1], x[0][2])):
             summary = ConsumableInventoryReportSummary()
             report_rows: list[ConsumableInventoryReportRow] = []
 
-            # FIX: Use enumeration index for serial_no, ignore stored value
             for index, row in enumerate(items, start=1):
+                opening_balance = qty(self._row_value(row, "opening_balance"))
+                issued_today = qty(self._row_value(row, "issued_today"))
+                closing_balance = qty(self._row_value(row, "closing_balance"))
+
                 report_rows.append(
                     ConsumableInventoryReportRow(
-                        serial_no=index,    # <-- sequential index
-                        entry_date=row.entry_date,
-                        store=row.store,
-                        item_category_name=row.item_category_name,
-                        item_name=row.item_name,
-                        unit=row.unit,
-                        opening_balance=qty(row.opening_balance),
-                        issued_today=qty(row.issued_today),
-                        closing_balance=qty(row.closing_balance),
-                        remarks=row.remarks,
-                        checked_by_initials=row.checked_by_initials,
+                        serial_no=index,
+                        entry_date=self._row_value(row, "entry_date"),
+                        store=self._row_value(row, "store"),
+                        item_category_name=self._row_value(row, "item_category_name"),
+                        item_name=self._row_value(row, "item_name"),
+                        unit=self._row_value(row, "unit"),
+                        opening_balance=opening_balance,
+                        issued_today=issued_today,
+                        closing_balance=closing_balance,
+                        remarks=self._row_value(row, "remarks"),
+                        checked_by_initials=self._row_value(row, "checked_by_initials"),
                     )
                 )
 
-                summary.opening_balance += qty(row.opening_balance)
-                summary.issued_today += qty(row.issued_today)
-                summary.closing_balance += qty(row.closing_balance)
+                summary.opening_balance += opening_balance
+                summary.issued_today += issued_today
+                summary.closing_balance += closing_balance
 
             groups.append(
                 ConsumableInventoryReportGroup(

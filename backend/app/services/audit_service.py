@@ -999,7 +999,7 @@ class AuditService:
                     "",
                     "",
                     "",
-                    "Grand Total",
+                    "Total",
                     group.summary.count_pcs,
                     group.summary.sample_size_pcs,
                     fmt_qty(group.summary.sample_weight_kg),
@@ -1010,7 +1010,7 @@ class AuditService:
                     fmt_qty(group.summary.ledger_outflows_kg),
                     fmt_qty(group.summary.ledger_closing_kg),
                     fmt_qty(group.summary.variance_kg),
-                    "",
+                    fmt_pct(self._variance_pct(group.summary.variance_kg, group.summary.ledger_closing_kg)),
                     "",
                 ]
             )
@@ -1079,14 +1079,14 @@ class AuditService:
                     "",
                     "",
                     "",
-                    "Grand Total",
+                    "Total",
                     "",
                     fmt_qty(group.summary.opening_ledger),
                     fmt_qty(group.summary.issues_total),
                     fmt_qty(group.summary.expected_closing),
                     fmt_qty(group.summary.physical_count),
                     fmt_qty(group.summary.variance),
-                    "",
+                    fmt_pct(self._variance_pct(group.summary.variance, group.summary.expected_closing)),
                     "",
                 ]
             )
@@ -1187,6 +1187,21 @@ class AuditService:
             leading=10,
             alignment=TA_CENTER,
         )
+        total_left = ParagraphStyle(
+            "TotalLeft",
+            parent=cell_left,
+            fontName="Times-Bold",
+        )
+        total_right = ParagraphStyle(
+            "TotalRight",
+            parent=cell_right,
+            fontName="Times-Bold",
+        )
+        total_center = ParagraphStyle(
+            "TotalCenter",
+            parent=cell_center,
+            fontName="Times-Bold",
+        )
 
         story = [
             Paragraph("PRODUCT INVENTORY AUDIT REPORT", title_style),
@@ -1264,11 +1279,32 @@ class AuditService:
                     Paragraph(safe_text(row.remarks), cell_left),
                 ])
 
+            table_data.append([
+                Paragraph("", total_center),
+                Paragraph("", total_center),
+                Paragraph("", total_center),
+                Paragraph("", total_center),
+                Paragraph("Total", total_left),
+                Paragraph(safe_text(group.summary.count_pcs), total_right),
+                Paragraph(safe_text(group.summary.sample_size_pcs), total_right),
+                Paragraph(fmt_qty(group.summary.sample_weight_kg), total_right),
+                Paragraph("", total_right),
+                Paragraph(fmt_qty(group.summary.calculated_total_kg), total_right),
+                Paragraph(fmt_qty(group.summary.ledger_opening_kg), total_right),
+                Paragraph(fmt_qty(group.summary.ledger_inflows_kg), total_right),
+                Paragraph(fmt_qty(group.summary.ledger_outflows_kg), total_right),
+                Paragraph(fmt_qty(group.summary.ledger_closing_kg), total_right),
+                Paragraph(fmt_qty(group.summary.variance_kg), total_right),
+                Paragraph(fmt_pct(self._variance_pct(group.summary.variance_kg, group.summary.ledger_closing_kg)), total_right),
+                Paragraph("", total_left),
+            ])
+
             table = Table(table_data, colWidths=col_widths, repeatRows=1, hAlign="LEFT")
             table.setStyle(
                 TableStyle([
                     ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E5E7EB")),
-                    ("BACKGROUND", (0, -1), (-1, -1), colors.white),
+                    ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#F3F4F6")),
+                    ("LINEABOVE", (0, -1), (-1, -1), 0.75, colors.HexColor("#6B7280")),
                     ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#9CA3AF")),
                     ("INNERGRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#D1D5DB")),
                     ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
@@ -1373,6 +1409,21 @@ class AuditService:
             leading=10,
             alignment=TA_CENTER,
         )
+        total_left = ParagraphStyle(
+            "TotalLeft",
+            parent=cell_left,
+            fontName="Times-Bold",
+        )
+        total_right = ParagraphStyle(
+            "TotalRight",
+            parent=cell_right,
+            fontName="Times-Bold",
+        )
+        total_center = ParagraphStyle(
+            "TotalCenter",
+            parent=cell_center,
+            fontName="Times-Bold",
+        )
 
         story = [
             Paragraph("CONSUMABLE INVENTORY AUDIT REPORT", title_style),
@@ -1435,11 +1486,27 @@ class AuditService:
                     Paragraph(safe_text(row.remarks), cell_left),
                 ])
 
+            table_data.append([
+                Paragraph("", total_center),
+                Paragraph("", total_center),
+                Paragraph("", total_center),
+                Paragraph("Total", total_left),
+                Paragraph("", total_center),
+                Paragraph(fmt_qty(group.summary.opening_ledger), total_right),
+                Paragraph(fmt_qty(group.summary.issues_total), total_right),
+                Paragraph(fmt_qty(group.summary.expected_closing), total_right),
+                Paragraph(fmt_qty(group.summary.physical_count), total_right),
+                Paragraph(fmt_qty(group.summary.variance), total_right),
+                Paragraph(fmt_pct(self._variance_pct(group.summary.variance, group.summary.expected_closing)), total_right),
+                Paragraph("", total_left),
+            ])
+
             table = Table(table_data, colWidths=col_widths, repeatRows=1, hAlign="LEFT")
             table.setStyle(
                 TableStyle([
                     ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E5E7EB")),
-                    ("BACKGROUND", (0, -1), (-1, -1), colors.white),
+                    ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#F3F4F6")),
+                    ("LINEABOVE", (0, -1), (-1, -1), 0.75, colors.HexColor("#6B7280")),
                     ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#9CA3AF")),
                     ("INNERGRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#D1D5DB")),
                     ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
