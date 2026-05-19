@@ -19,9 +19,22 @@ const GREEN_BG = "rgba(21,128,61,0.08)";
 const ORANGE = "#ff7a00";
 
 const DEFAULT_DASHBOARD_PATH = "/dashboard";
-const LOGIN_TIMEOUT_MS = 15000;
-const AUTH_READY_TIMEOUT_MS = 5000;
-const AUTH_READY_CHECK_INTERVAL_MS = 120;
+
+const DEFAULT_API_BASE_URL = "https://primegateanalytics-2.onrender.com";
+const API_BASE_URL = (
+  process.env.NEXT_PUBLIC_API_BASE_URL ||
+  process.env.NEXT_PUBLIC_API_URL ||
+  DEFAULT_API_BASE_URL
+).replace(/\/+$/, "");
+
+/**
+ * Render free services can take time to wake up.
+ * 90 seconds prevents the frontend from failing too early.
+ */
+const LOGIN_TIMEOUT_MS = 90000;
+const HEALTH_TIMEOUT_MS = 12000;
+const AUTH_READY_TIMEOUT_MS = 15000;
+const AUTH_READY_CHECK_INTERVAL_MS = 150;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -42,8 +55,23 @@ function normalizeErrorMessage(error) {
       .join(", ");
   }
 
-  if (typeof error?.message === "string" && error.message.trim()) {
-    return error.message;
+  const message =
+    typeof error?.message === "string" && error.message.trim()
+      ? error.message.trim()
+      : "";
+
+  if (message) {
+    const lowerMessage = message.toLowerCase();
+
+    if (
+      lowerMessage.includes("failed to fetch") ||
+      lowerMessage.includes("networkerror") ||
+      lowerMessage.includes("network error")
+    ) {
+      return "Unable to reach the server. Please wait a moment and try again. If this continues, check the API URL and backend service.";
+    }
+
+    return message;
   }
 
   return "Login failed.";
@@ -66,10 +94,47 @@ function normalizeRedirectCandidate(value) {
 }
 
 function resolveRedirectTarget(router) {
-  const nextParam =
-    typeof router?.query?.next === "string" ? router.query.next : null;
-
+  const nextParam = typeof router?.query?.next === "string" ? router.query.next : null;
   return normalizeRedirectCandidate(nextParam) || DEFAULT_DASHBOARD_PATH;
+}
+
+function withTimeout(promise, timeoutMs, message) {
+  let timeoutId;
+
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(message));
+    }, timeoutMs);
+  });
+
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    clearTimeout(timeoutId);
+  });
+}
+
+async function warmBackend(timeoutMs = HEALTH_TIMEOUT_MS) {
+  if (typeof window === "undefined") return false;
+  if (!API_BASE_URL) return false;
+
+  const controller = new AbortController();
+
+  const timeoutId = window.setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/health`, {
+      method: "GET",
+      cache: "no-store",
+      signal: controller.signal,
+    });
+
+    return response.ok;
+  } catch (_) {
+    return false;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 }
 
 async function waitForAuthenticatedState(timeoutMs = AUTH_READY_TIMEOUT_MS) {
@@ -118,8 +183,10 @@ export default function LoginPage() {
 
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [loginStatus, setLoginStatus] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
+  const [isWarmingBackend, setIsWarmingBackend] = useState(false);
 
   const redirectTarget = useMemo(() => resolveRedirectTarget(router), [router]);
 
@@ -141,12 +208,14 @@ export default function LoginPage() {
     };
   }, [password, usernameOrEmail]);
 
-  const canSubmit = useMemo(() => {
+  const hasCredentials = useMemo(() => {
     const liveUsername = (usernameInputRef.current?.value || usernameOrEmail || "").trim();
     const livePassword = passwordInputRef.current?.value || password || "";
 
-    return Boolean(liveUsername && livePassword && !isSubmitting);
-  }, [usernameOrEmail, password, isSubmitting]);
+    return Boolean(liveUsername && livePassword);
+  }, [usernameOrEmail, password]);
+
+  const canSubmit = hasCredentials && !isSubmitting;
 
   useEffect(() => {
     mountedRef.current = true;
@@ -155,6 +224,28 @@ export default function LoginPage() {
       mountedRef.current = false;
       autofillSyncTimersRef.current.forEach((timerId) => clearTimeout(timerId));
       autofillSyncTimersRef.current = [];
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    let cancelled = false;
+
+    async function prepareBackend() {
+      setIsWarmingBackend(true);
+
+      await warmBackend();
+
+      if (!cancelled && mountedRef.current) {
+        setIsWarmingBackend(false);
+      }
+    }
+
+    prepareBackend();
+
+    return () => {
+      cancelled = true;
     };
   }, []);
 
@@ -233,22 +324,33 @@ export default function LoginPage() {
 
       setError("");
       setSuccess("");
+      setLoginStatus("Connecting to server...");
       setIsSubmitting(true);
 
       try {
-        const loginPromise = authService.login({
-          usernameOrEmail: credentials.usernameOrEmail,
-          password: credentials.password,
-          rememberMe,
-        });
+        /**
+         * Wake backend again when the user clicks login.
+         * This helps when Render is asleep.
+         */
+        await warmBackend(8000);
 
-        const timeoutPromise = new Promise((_, reject) => {
-          setTimeout(() => {
-            reject(new Error("Login is taking too long. Please try again."));
-          }, LOGIN_TIMEOUT_MS);
-        });
+        if (!mountedRef.current) return;
 
-        await Promise.race([loginPromise, timeoutPromise]);
+        setLoginStatus("Verifying your credentials...");
+
+        await withTimeout(
+          authService.login({
+            usernameOrEmail: credentials.usernameOrEmail,
+            password: credentials.password,
+            rememberMe,
+          }),
+          LOGIN_TIMEOUT_MS,
+          "The server is still waking up. Please wait a moment, then try again."
+        );
+
+        if (!mountedRef.current) return;
+
+        setLoginStatus("Preparing your dashboard...");
 
         const authReady = await waitForAuthenticatedState();
         if (!authReady) {
@@ -258,6 +360,7 @@ export default function LoginPage() {
         if (!mountedRef.current) return;
 
         setSuccess("Login successful.");
+        setLoginStatus("Opening dashboard...");
 
         if (!hasRedirectedRef.current) {
           hasRedirectedRef.current = true;
@@ -267,6 +370,7 @@ export default function LoginPage() {
         if (!mountedRef.current) return;
 
         setError(normalizeErrorMessage(err));
+        setLoginStatus("");
         setIsSubmitting(false);
         hasRedirectedRef.current = false;
         return;
@@ -322,6 +426,13 @@ export default function LoginPage() {
               </div>
             </div>
 
+            {isWarmingBackend && !isSubmitting ? (
+              <div style={infoBoxStyle}>
+                <span style={miniSpinnerStyle} />
+                <span>Preparing secure connection...</span>
+              </div>
+            ) : null}
+
             {error ? <div style={errorBoxStyle}>{error}</div> : null}
             {success ? <div style={successBoxStyle}>{success}</div> : null}
 
@@ -368,7 +479,10 @@ export default function LoginPage() {
                   <button
                     type="button"
                     onClick={() => setShowPassword((prev) => !prev)}
-                    style={showHideButtonStyle}
+                    style={{
+                      ...showHideButtonStyle,
+                      ...(isSubmitting ? disabledTextButtonStyle : null),
+                    }}
                     disabled={isSubmitting}
                   >
                     {showPassword ? "Hide" : "Show"}
@@ -397,13 +511,28 @@ export default function LoginPage() {
                 aria-disabled={!canSubmit}
                 style={{
                   ...submitButtonStyle,
-                  ...(canSubmit
+                  ...(isSubmitting
+                    ? loadingSubmitButtonStyle
+                    : canSubmit
                     ? activeSubmitButtonStyle
                     : disabledSubmitButtonStyle),
                 }}
               >
-                {isSubmitting ? "Signing in..." : "Sign in"}
+                <span style={buttonContentStyle}>
+                  {isSubmitting ? <span style={buttonSpinnerStyle} /> : null}
+                  <span>{isSubmitting ? "Signing in..." : "Sign in"}</span>
+                </span>
               </button>
+
+              {isSubmitting ? (
+                <div style={loginProgressStyle}>
+                  <span style={miniSpinnerStyle} />
+                  <span>
+                    {loginStatus ||
+                      "Signing in. Please wait while the server responds."}
+                  </span>
+                </div>
+              ) : null}
             </form>
 
             <div style={footerNoteStyle}>
@@ -600,6 +729,11 @@ const showHideButtonStyle = {
   borderRadius: 20,
 };
 
+const disabledTextButtonStyle = {
+  color: MUTED,
+  cursor: "not-allowed",
+};
+
 const checkboxRowStyle = {
   display: "flex",
   justifyContent: "space-between",
@@ -630,7 +764,7 @@ const submitButtonStyle = {
   fontSize: 15,
   fontWeight: 700,
   transition: "background 0.2s ease, border-color 0.2s ease, opacity 0.2s ease",
-  marginBottom: 20,
+  marginBottom: 12,
   outline: "none",
 };
 
@@ -642,12 +776,73 @@ const activeSubmitButtonStyle = {
   pointerEvents: "auto",
 };
 
+const loadingSubmitButtonStyle = {
+  background: BLUE_DARK,
+  color: "#ffffff",
+  border: `1px solid ${BLUE_DARK}`,
+  cursor: "wait",
+  pointerEvents: "none",
+};
+
 const disabledSubmitButtonStyle = {
   background: SOFT,
   color: MUTED,
   border: `1px solid ${BORDER}`,
   cursor: "not-allowed",
   pointerEvents: "auto",
+};
+
+const buttonContentStyle = {
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: 10,
+};
+
+const buttonSpinnerStyle = {
+  width: 17,
+  height: 17,
+  borderRadius: "50%",
+  border: "2px solid rgba(255,255,255,0.4)",
+  borderTopColor: "#ffffff",
+  animation: "spin 0.8s linear infinite",
+  flexShrink: 0,
+};
+
+const miniSpinnerStyle = {
+  width: 15,
+  height: 15,
+  borderRadius: "50%",
+  border: `2px solid ${BORDER}`,
+  borderTopColor: BLUE,
+  animation: "spin 0.8s linear infinite",
+  flexShrink: 0,
+};
+
+const loginProgressStyle = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: 8,
+  color: MUTED,
+  fontSize: 12,
+  lineHeight: 1.5,
+  marginBottom: 18,
+  textAlign: "center",
+};
+
+const infoBoxStyle = {
+  display: "flex",
+  alignItems: "center",
+  gap: 10,
+  border: `1px solid ${BORDER}`,
+  background: SOFT,
+  color: MUTED,
+  borderRadius: 16,
+  padding: "11px 14px",
+  fontSize: 13,
+  marginBottom: 20,
+  lineHeight: 1.5,
 };
 
 const footerNoteStyle = {
