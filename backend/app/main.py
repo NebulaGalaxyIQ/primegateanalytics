@@ -9,7 +9,6 @@ from app.core.database import Base, engine
 
 # Import models so SQLAlchemy registers all tables before create_all()
 from app.models import *  # noqa: F401,F403
-
 # Import route modules
 from app.routes import (
     audit,
@@ -21,6 +20,7 @@ from app.routes import (
     reports,
     saas,
     users,
+    dynamic_inventory,
 )
 
 
@@ -128,6 +128,7 @@ app.include_router(breakeven_report.router)
 app.include_router(inventory.router)
 app.include_router(audit.router)
 app.include_router(byproducts.router)
+app.include_router(dynamic_inventory.router)
 
 
 # =========================================================

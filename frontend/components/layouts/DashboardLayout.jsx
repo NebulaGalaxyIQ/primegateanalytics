@@ -169,6 +169,21 @@ function InventoryIcon() {
   );
 }
 
+
+function DynamicInventoryIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <rect x="3.5" y="4" width="17" height="16" rx="2.5" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M3.5 9.5h17" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M8.75 4v16" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M14.5 4v16" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M6 14.5h1.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M11.25 14.5h1.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M17 14.5h1.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 function AuditIcon() {
   return (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -338,6 +353,14 @@ function getPageMeta(pathname) {
     };
   }
 
+  if (pathname === "/dynamic-inventory" || pathname.startsWith("/dynamic-inventory/")) {
+    return {
+      title: "Dynamic Inventory",
+      subtitle:
+        "Create Excel-style inventory modules, fill daily sheets, view history, and export PDF or Excel reports.",
+    };
+  }
+
   if (pathname === "/inventory" || pathname.startsWith("/inventory/")) {
     return {
       title: "Inventory",
@@ -477,6 +500,14 @@ export default function DashboardLayout({
       label: "Inventory",
       icon: <InventoryIcon />,
       active: router.pathname === "/inventory" || router.pathname.startsWith("/inventory/"),
+    },
+    {
+      href: "/dynamic-inventory",
+      label: "Dynamic Inventory",
+      icon: <DynamicInventoryIcon />,
+      active:
+        router.pathname === "/dynamic-inventory" ||
+        router.pathname.startsWith("/dynamic-inventory/"),
     },
     {
       href: "/audit",
